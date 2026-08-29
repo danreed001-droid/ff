@@ -1,61 +1,49 @@
 #!/usr/bin/env python3
 """
-Fantasy Quadrant: RSI-style "hot/cold index" plotted against real weekly
-performance, with a short trail behind each player showing their last few
-weeks' trajectory -- same visual mechanic as moneyflow-update's Equilibrium
-quadrant panels, ported from tickers/price-closes to fantasy players/weekly
-points.
+Fantasy Trends: per-player weekly trend charts for the top slice of the
+NFL, built fresh from the Sleeper API on a weekly cron.
 
-PLAYER SELECTION (this is the part that changed)
-------------------------------------------------
-The report is no longer a hand-maintained list of 8 names. Each run:
+Two grids of small-multiple charts, one card per player, sharing a pool, a
+position filter and a season filter:
 
-  1. Ranks EVERY player by the fantasy points they scored in THEIR OWN
-     MOST RECENT GAME -- for most players that's the latest completed week,
-     but a player who was on bye, injured or inactive is ranked on the last
-     week they actually played rather than being dropped from the report.
+  1. WEEKLY POINTS -- fantasy points per game, chronological, across as much
+     of the last 6 regular seasons as each player actually has. Labeled
+     y-axis, so you can read the point value off the chart.
+  2. POINTS PER SNAP -- the same weeks, divided by offensive snaps played.
+     The efficiency read: who produces the most per unit of playing time,
+     rather than who is simply on the field the most.
+
+Every week is a bubble sized by that game's SNAP COUNT, scaled across every
+game for every player in the report -- so bubble size means the same thing
+on both grids and on every card. Hover or click any bubble for that game's
+exact numbers.
+
+PLAYER SELECTION
+----------------
+The report is not a hand-maintained list. Each run:
+
+  1. Ranks EVERY player by the fantasy points they scored in THEIR OWN MOST
+     RECENT GAME -- for most players that's the latest completed week, but a
+     player who was on bye, injured or inactive is ranked on the last week
+     they actually played rather than being dropped from the report.
      Filtered to QB/RB/WR/TE.
-  2. Takes the top FANTASY_POOL_SIZE (default 300) of them as the
-     candidate pool -- that pool is what gets fetched, framed and rendered.
-  3. The page's ALL view shows only the top FANTASY_TOP_N (default 40) of
-     that pool, so the quadrant scatter stays readable. Selecting a
-     POSITION shows EVERY player at that position in the full 300-player
-     pool, not just the ones that happened to crack the overall top 40.
+  2. Takes the top FANTASY_POOL_SIZE (default 300) of them as the pool.
+  3. The ALL view shows only the top FANTASY_TOP_N (default 40) of that
+     pool. Selecting a POSITION shows EVERY player at that position in the
+     full pool, not just the ones that cracked the overall top 40.
 
-Ranking on each player's last game rather than a season total makes this a
-"who just did something" report: the pool turns over week to week, which is
-the point of a weekly cron. A player's last game is looked for within the
-ranking season only, newest week first -- someone who hasn't played at all
-this season genuinely has nothing to rank and is left out. How stale each
-player's last game is shows on the page (the trend card says "last: wk N"
-whenever it isn't the current week) so a week-2 number sitting next to a
-week-9 one is never silently compared. FANTASY_RANK_BY=season switches to
+A player's last game is looked for within the ranking season only, newest
+week first -- someone who hasn't played at all this season has nothing to
+rank and is left out. How stale each player's number is shows on their card
+("last: wk N" whenever it isn't the current week), so a week-2 number is
+never silently compared to a week-9 one. FANTASY_RANK_BY=season switches to
 season-to-date totals if you'd rather the pool be stable.
 
-"Most recent completed week" is the newest week that actually has a full
-slate of stat lines (at least MIN_WEEK_PLAYERS players). A run that lands
-mid-slate -- Thursday night, or Sunday afternoon -- steps back to the last
-finished week rather than ranking everyone against the handful of players
-whose game has kicked off. Setting FANTASY_WATCHLIST bypasses ranking
-entirely and uses exactly the names given, as before.
-
-Three views, all built from the same fetched data:
-  1. Hot/cold index x points scored that week (bubble = usage share)
-  2. Hot/cold index x points PER TOUCH that week -- an efficiency read
-     instead of a volume read, same y-axis, same bubble sizing
-  3. A 4-season points-per-week trend grid, one small chart per player,
-     covering as much of the last 4 regular seasons as actually exists for
-     that player (a rookie just gets however many weeks they have). Every
-     week is a bubble sized by that game's touches, scaled relative to
-     every game for every player in the report -- not per-player.
-
-Panels 1 and 2 share a SEASON SELECTOR (the last 4 regular seasons,
-whichever of them have any data) on top of their own week slider within
-whichever season is selected -- so this works both mid-season (defaults to
-the live season) and off-season (defaults to the most recently completed
-one, rather than showing nothing). All three views also share the position
-filter described above, built from whichever positions are actually
-present in the pool.
+"Most recent completed week" is the newest week carrying a full slate of
+stat lines (at least MIN_WEEK_PLAYERS players). A run that lands mid-slate
+-- Thursday night, or Sunday afternoon -- steps back to the last finished
+week rather than ranking everyone against the handful of players whose game
+has kicked off. Setting FANTASY_WATCHLIST bypasses ranking entirely.
 
 Meant to run on GitHub Actions on a weekly cron (e.g. Tuesday morning, after
 Monday Night Football has posted final stats) or any machine with normal
@@ -64,11 +52,15 @@ allowlist, since it talks to api.sleeper.app.
 
 Writes one file to the repo each run:
 
-    index.html - self-contained visual (dark, scrubbable quadrant scatter
-                 x2 with a season selector + static trend grid), so the
-                 repo always has an up-to-date snapshot you can open
-                 directly or serve via GitHub Pages -- no external tooling
-                 required to view it.
+    index.html - self-contained visual, so the repo always has an
+                 up-to-date snapshot you can open directly or serve via
+                 GitHub Pages -- no external tooling required to view it.
+
+The charts are drawn in the browser from a compact data payload rather than
+being pre-rendered as SVG server-side. That keeps a 300-player, 6-season
+report under a megabyte instead of ~4MB of markup, lets the y-axis switch
+between per-player and shared scaling without a rebuild, and means only the
+cards actually on screen ever get drawn.
 
 Data source: the Sleeper API (https://docs.sleeper.com/) -- free, read-only,
 no API key required. Endpoints used:
@@ -82,35 +74,27 @@ no API key required. Endpoints used:
     /v1/stats/nfl/regular/{season}/{week}  - one week's box-score stats for
                                               every NFL player who played.
                                               Called once per (season, week)
-                                              needed across all three views
-                                              and cached in-process for the
-                                              run -- the ranking pass, the
-                                              quadrant panels' per-season
-                                              data and the trend grid's
-                                              4-season lookback all draw
-                                              from the same fetches.
+                                              and cached in-process, so the
+                                              ranking pass and the trend
+                                              build share the same fetches.
 
 Env vars (all optional):
 
-    FANTASY_SCORING   - "ppr" (default), "half_ppr", or "std". Which Sleeper
-                         points field to plot.
-    FANTASY_POOL_SIZE - how many top-ranked players make the candidate pool
+    FANTASY_SCORING   - "ppr" (default), "half_ppr", or "std".
+    FANTASY_POOL_SIZE - how many top-ranked players make the pool
                          (default 300). This is what the position filter
                          exposes.
-    FANTASY_TOP_N     - how many of the pool the ALL view plots
+    FANTASY_TOP_N     - how many of the pool the ALL view shows
                          (default 40). Position views ignore this.
-    FANTASY_RANK_BY   - "last_game" (default) ranks the pool by each
-                         player's own most recent game; "season" ranks by
-                         season-to-date totals for a pool that barely moves
-                         week to week.
+    FANTASY_RANK_BY   - "last_game" (default) ranks by each player's own
+                         most recent game; "season" ranks by season-to-date
+                         totals for a pool that barely moves week to week.
     FANTASY_WATCHLIST - comma-separated player full names. If set, ranking
-                         is skipped entirely and exactly these players are
-                         used, e.g. "Christian McCaffrey,Justin Jefferson".
+                         is skipped and exactly these players are used.
     FANTASY_POSITIONS - comma-separated positions eligible for the pool
                          (default "QB,RB,WR,TE").
-    FANTASY_TREND_SEASONS - how many seasons back BOTH the quadrant panels'
-                         season selector and the trend grid cover, including
-                         the current one (default 4).
+    FANTASY_TREND_SEASONS - how many regular seasons the grids cover,
+                         including the current one (default 6).
 """
 
 import html
@@ -122,14 +106,11 @@ from datetime import datetime, timezone
 
 SLEEPER_BASE = "https://api.sleeper.app/v1"
 
-RSI_PERIOD = 4  # shorter window than the stock version's 14 -- a season is only ~17 weeks
-TRAIL_LEN = 3   # trail runs from (TRAIL_LEN - 1) weeks back to the current week
-DEFAULT_TREND_SEASONS = 4
+DEFAULT_TREND_SEASONS = 6
 DEFAULT_POOL_SIZE = 300
 DEFAULT_TOP_N = 40
 MAX_WEEKS_PER_SEASON = 18  # current NFL regular-season length; harmless if a season had 17
 MIN_WEEK_PLAYERS = 150     # below this, a week is mid-slate (or garbage) -- step back a week to rank
-LABEL_LIMIT = 14           # at most this many name labels drawn per quadrant frame
 DEFAULT_RANK_BY = "last_game"  # each player's own latest game; "season" = season-to-date totals
 REQUEST_TIMEOUT = 20
 
@@ -139,11 +120,17 @@ SCORING_FIELD = {
     "std": "pts_std",
 }
 
-POSITION_ORDER = ["QB", "RB", "WR", "TE"]  # display order for the filter bar; anything else is appended after
+# Sleeper's offensive-snap field. Kept as a list because it's the one stat
+# here that isn't guaranteed to be populated for every historical season --
+# if none of these keys is present for a game, that game has no defined
+# points-per-snap and is drawn as a gap rather than a zero.
+SNAP_FIELDS = ["off_snp"]
+
+POSITION_ORDER = ["QB", "RB", "WR", "TE"]  # display order for the filter bar; anything else appended after
 
 
 def fetch_json(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "fantasy-quadrant/2.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "fantasy-trends/3.0"})
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -151,17 +138,16 @@ def fetch_json(url):
 def get_state():
     """Current NFL season/week per Sleeper. Note this can legitimately point
     at a RECENTLY COMPLETED season during the off-season (Sleeper doesn't
-    roll `season` over to the new one until it actually starts) -- main()
-    treats that as "default to the most recent season with real data"
-    rather than as an error."""
+    roll `season` over to the new one until it actually starts) -- the
+    ranking-window search treats that as "use the most recent season with
+    real data" rather than as an error."""
     return fetch_json(f"{SLEEPER_BASE}/state/nfl")
 
 
 def get_players_directory():
     """Full player_id -> {full_name, position, team, ...} directory. Large
     (~5MB) -- Sleeper's docs ask this be fetched at most once a day; a
-    weekly cron run comfortably respects that on its own, no extra caching
-    needed here."""
+    weekly cron run comfortably respects that on its own."""
     return fetch_json(f"{SLEEPER_BASE}/players/nfl")
 
 
@@ -170,13 +156,12 @@ _WEEK_STATS_CACHE = {}
 
 def get_week_stats(season, week):
     """One week's stats for every NFL player who recorded a stat line that
-    week: player_id -> {pts_ppr, pts_half_ppr, pts_std, rec_tgt, rec,
-    rush_att, ...}. Returns {} (not None) if the endpoint has nothing for
-    that week yet (a future week, or a week beyond a shorter historical
-    season), so callers can treat that the same as "no data" rather than an
-    error. Cached in-process per (season, week) since the ranking pass, the
-    quadrant panels' per-season data and the trend grid's 4-season lookback
-    all ask for overlapping weeks."""
+    week: player_id -> {pts_ppr, off_snp, rec, rush_att, ...}. Returns {}
+    (not None) if the endpoint has nothing for that week yet (a future week,
+    or a week beyond a shorter historical season), so callers can treat that
+    the same as "no data" rather than an error. Cached in-process per
+    (season, week) since the ranking pass and the trend build ask for
+    overlapping weeks."""
     key = (str(season), int(week))
     if key in _WEEK_STATS_CACHE:
         return _WEEK_STATS_CACHE[key]
@@ -191,18 +176,16 @@ def get_week_stats(season, week):
 
 def season_list(anchor_season, seasons_back):
     """[oldest, ..., newest] season strings, `seasons_back` of them, ending
-    at `anchor_season` inclusive. Shared by the quadrant panels' per-season
-    fetch and the trend grid so both cover exactly the same span."""
+    at `anchor_season` inclusive."""
     anchor = int(anchor_season)
     return [str(anchor - i) for i in range(seasons_back - 1, -1, -1)]
 
 
 def load_season_weeks(season, week_cap=MAX_WEEKS_PER_SEASON):
     """{week: stats_dict} for every week of `season` that has real data.
-    Weeks that don't exist yet come back empty from get_week_stats() and are
-    simply omitted. Everything is cached, so calling this repeatedly for the
-    same season across the ranking pass / panel build / trend build costs
-    exactly one set of fetches."""
+    Weeks that don't exist yet come back empty and are omitted. Everything
+    is cached, so calling this repeatedly for the same season across the
+    ranking pass and the trend build costs exactly one set of fetches."""
     out = {}
     for w in range(1, week_cap + 1):
         wk = get_week_stats(season, w)
@@ -211,8 +194,20 @@ def load_season_weeks(season, week_cap=MAX_WEEKS_PER_SEASON):
     return out
 
 
+def snaps_of(stats):
+    """Offensive snaps for one game, or None when Sleeper didn't populate the
+    field for that season/player. None is meaningfully different from 0 here:
+    0 snaps means "dressed but never on the field", while None means "we
+    don't know", and only the former is a real data point."""
+    for field in SNAP_FIELDS:
+        v = stats.get(field)
+        if v is not None:
+            return int(v)
+    return None
+
+
 # ---------------------------------------------------------------------------
-# Player selection: rank the whole league, take the top N as the pool
+# Player selection
 # ---------------------------------------------------------------------------
 
 def count_scorers(week_stats, scoring_field):
@@ -222,22 +217,19 @@ def count_scorers(week_stats, scoring_field):
 
 
 def pick_ranking_window(seasons, scoring_field, live_season=None, live_week=None):
-    """Returns (default_season, season_weeks, rank_week) where:
+    """Returns (ranking_season, season_weeks, rank_week):
 
-      - `default_season` is what the page's season selector opens on, and
-        the season the pool is ranked out of: the live season when one is
-        genuinely in progress and has any data, otherwise the most recent
-        season that has data at all.
+      - `ranking_season` is the season the pool is ranked out of: the live
+        season when one is genuinely in progress and has any data, otherwise
+        the most recent season that has data at all.
       - `season_weeks` is that season's {week: stats} map (cached, so the
-        later framing passes re-use it).
+        trend build re-uses it).
       - `rank_week` is the MOST RECENT COMPLETED week in it -- the newest
         week carrying at least MIN_WEEK_PLAYERS stat lines. A run that lands
-        mid-slate (Thursday night, Sunday afternoon) sees a thin partial
-        week and steps back to the last finished one instead, so the pool is
-        never built from the handful of players whose game has already
-        kicked off. If no week clears the bar (an odd historical season, or
-        a scoring field Sleeper doesn't populate), it falls back to the
-        newest week with anything in it.
+        mid-slate sees a thin partial week and steps back to the last
+        finished one, so the pool is never built from the handful of players
+        whose game has already kicked off. If no week clears the bar, it
+        falls back to the newest week with anything in it.
 
     Walks seasons newest -> oldest; every fetch it makes is cached."""
     for season in reversed(seasons):  # newest first
@@ -266,16 +258,14 @@ def rank_pool(weeks_by_week, players_dir, scoring_field, pool_size, positions,
     records which week that number came from and `weeks_stale` how far back
     it is (0 = played the ranking week), which is what the page uses to
     caption a stale number rather than passing it off as current. The search
-    stays inside `weeks_by_week`, i.e. the ranking season: a player with no
-    game at all this season has nothing to rank and is left out.
+    stays inside `weeks_by_week`, i.e. the ranking season.
 
-    `rank_by="season"` instead totals every week in `weeks_by_week`, for a
-    pool that barely moves run to run.
+    `rank_by="season"` instead totals every week for a pool that barely
+    moves run to run.
 
     Ties break on recency of the ranking game (a 20-point week 9 outranks a
     20-point week 3), then games played, then name -- so ordering is stable
-    and never rewards staleness. Costs zero extra HTTP: `weeks_by_week` is
-    already-cached week stats."""
+    and never rewards staleness. Costs zero extra HTTP."""
     if rank_week is None:
         rank_week = max(weeks_by_week.keys()) if weeks_by_week else None
 
@@ -333,11 +323,10 @@ def rank_pool(weeks_by_week, players_dir, scoring_field, pool_size, positions,
 
 def resolve_watchlist_ids(players_dir, names):
     """Manual-override path: case-insensitive full_name match against the
-    players directory. Returns the same shape rank_pool() does, with rank
-    following the order the names were given, so the rest of the pipeline
-    doesn't care which path produced the list. A name with no match is
-    skipped with a warning rather than silently dropped, so a typo or a
-    retirement doesn't fail the whole run."""
+    players directory, returning the same shape rank_pool() does so the rest
+    of the pipeline doesn't care which path produced the list. A name with no
+    match is skipped with a warning rather than silently dropped, so a typo
+    or a retirement doesn't fail the whole run."""
     by_name = {}
     for pid, info in players_dir.items():
         name = info.get("full_name")
@@ -360,164 +349,27 @@ def resolve_watchlist_ids(players_dir, names):
 
 
 # ---------------------------------------------------------------------------
-# Per-week framing
+# Trend data
 # ---------------------------------------------------------------------------
 
-def team_opportunity_totals(week_stats, players_dir):
-    """{team: total opportunities} for one week, where "opportunities" =
-    rush attempts + targets (carries + targets) summed across every player
-    on that team who recorded a stat line that week. This is the volume
-    proxy that stands in for a stock's dollar volume -- a direct measure of
-    how much of the offense's ball-distribution went through that team's
-    various backs/receivers, independent of how well any one of them
-    performed with it.
-
-    Caveat worth knowing: team membership comes from the CURRENT players
-    directory, so a mid-season trade attributes a player's earlier weeks to
-    their new team's denominator. It moves usage share for traded players
-    only, and never affects points or points-per-touch."""
-    totals = {}
-    for pid, stats in week_stats.items():
-        info = players_dir.get(pid)
-        if not info:
-            continue
-        team = info.get("team")
-        if not team:
-            continue
-        opp = (stats.get("rush_att") or 0) + (stats.get("rec_tgt") or 0)
-        if opp:
-            totals[team] = totals.get(team, 0.0) + opp
-    return totals
-
-
-def rsi_series(values, period=RSI_PERIOD):
-    """Wilder's RSI over a list of values (oldest -> newest) -- identical
-    math to the stock version, just run on weekly fantasy points instead of
-    price closes. Returns a same-length list: None before the first full
-    `period`-value window, then 0-100 from there on."""
-    n = len(values)
-    out = [None] * n
-    if n < period + 1:
-        return out
-
-    gains = [0.0] * n
-    losses = [0.0] * n
-    for i in range(1, n):
-        delta = values[i] - values[i - 1]
-        gains[i] = max(delta, 0.0)
-        losses[i] = max(-delta, 0.0)
-
-    avg_gain = sum(gains[1:period + 1]) / period
-    avg_loss = sum(losses[1:period + 1]) / period
-
-    def rsi_from(g, l):
-        if l == 0:
-            return 100.0 if g > 0 else 50.0
-        rs = g / l
-        return 100.0 - (100.0 / (1.0 + rs))
-
-    out[period] = rsi_from(avg_gain, avg_loss)
-    for i in range(period + 1, n):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-        out[i] = rsi_from(avg_gain, avg_loss)
-    return out
-
-
-def build_player_frames(pool, weekly_stats_by_week, players_dir, scoring_field):
-    """For each player in `pool`, build COLUMN ARRAYS (not a list of per-week
-    dicts) covering whichever weeks are present in `weekly_stats_by_week`,
-    oldest -> newest:
-
-      - pts:   that week's fantasy points in the configured scoring format
-      - ppt:   points PER TOUCH that week (touches = rush attempts +
-               receptions, NOT targets). None for a week with zero touches.
-      - usage: player's opportunities (rush_att + rec_tgt) as a share of
-               their team's total that week -- 0..1, the bubble-size input
-               for BOTH quadrant panels
-      - rsi:   RSI(RSI_PERIOD) run on this player's own points series so far
-               (within this call's week window -- RSI resets per season,
-               since a hot/cold streak shouldn't carry across an off-season)
-
-    Column arrays rather than per-week dicts because at 300 players x 18
-    weeks x 4 seasons the repeated JSON keys were the single largest thing
-    in the output file. Trails are NOT stored: they're two points derived
-    from indices i and max(0, i - (TRAIL_LEN - 1)) of these same arrays, so
-    the front end computes them on the fly instead of shipping a
-    pre-expanded copy of the data.
-
-    A player with NO stat line in ANY week of `weekly_stats_by_week` (never
-    appears in any week's dict -- not "appeared and scored 0") is omitted
-    entirely, rather than plotted as a flatlined-at-zero bubble -- that's
-    the "doesn't exist yet in this season" case (a rookie's earlier
-    seasons, a recent addition's earlier weeks)."""
-    weeks = sorted(weekly_stats_by_week.keys())
-    team_totals_by_week = {w: team_opportunity_totals(weekly_stats_by_week[w], players_dir) for w in weeks}
-
-    players_out = []
-    for entry in pool:
-        pid, team = entry["pid"], entry["team"]
-        if not any(pid in weekly_stats_by_week[w] for w in weeks):
-            continue
-
-        pts_series, ppt_series, usage_series = [], [], []
-        for w in weeks:
-            stats = weekly_stats_by_week[w].get(pid, {})
-            pts = float(stats.get(scoring_field) or 0.0)
-            touches = (stats.get("rush_att") or 0) + (stats.get("rec") or 0)
-            opp = (stats.get("rush_att") or 0) + (stats.get("rec_tgt") or 0)
-            team_total = team_totals_by_week[w].get(team, 0.0)
-            usage = (opp / team_total) if team_total else 0.0
-
-            pts_series.append(round(pts, 1))
-            ppt_series.append(round(pts / touches, 2) if touches > 0 else None)
-            usage_series.append(round(usage, 4))
-
-        rsi_vals = rsi_series(pts_series)
-        players_out.append({
-            "name": entry["name"], "pos": entry["pos"], "team": team, "rank": entry["rank"],
-            "weeks": weeks, "pts": pts_series, "ppt": ppt_series, "usage": usage_series,
-            "rsi": [None if v is None else round(v, 1) for v in rsi_vals],
-        })
-    return players_out
-
-
-def build_frames_by_season(pool, seasons, players_dir, scoring_field, live_season=None, live_week=None):
-    """{season: [player_column_dicts...]} for each season in `seasons` that
-    has any real data -- a season with nothing (further back than Sleeper
-    has stats for, or a not-yet-started season) is simply omitted from the
-    returned dict rather than included empty, so the front end's season
-    selector only ever offers seasons that actually have something to show.
-
-    For `live_season` (only meaningful when the caller knows that season is
-    genuinely in progress), only weeks 1..`live_week` are requested since
-    later weeks don't exist yet; every other season requests the full range
-    (get_week_stats() gracefully returns {} for any week that doesn't
-    exist, so this is harmless for a 17-week season). All of it is cached,
-    so seasons already pulled during the ranking pass cost nothing here."""
-    out = {}
-    for season in seasons:
-        week_cap = live_week if (live_season is not None and season == str(live_season) and live_week) else MAX_WEEKS_PER_SEASON
-        weekly_stats_by_week = load_season_weeks(season, week_cap)
-        if not weekly_stats_by_week:
-            continue
-        frames = build_player_frames(pool, weekly_stats_by_week, players_dir, scoring_field)
-        if frames:
-            out[season] = frames
-    return out
+G_SEASON, G_WEEK, G_PTS, G_SNAPS, G_TOUCHES = 0, 1, 2, 3, 4
 
 
 def build_trend_series(pool, seasons, scoring_field):
     """For each player in the pool, a chronological (oldest -> newest) list
-    of [season, week, pts, ppt, touches] across every season in `seasons`
-    that has real data for them. A week is included only if the player
-    actually has a stat line that week -- a rookie or a player who entered
-    the league partway through this window simply starts wherever their real
-    data starts, rather than being padded with zeros for seasons before they
-    existed. `touches` is rush attempts + receptions; `ppt` is points PER
-    TOUCH that week (None when touches is 0) -- `ppt` drives that week's
-    bubble size in render_trend_svg(). Reuses get_week_stats()'s cache, so
-    nothing here re-fetches."""
+    of [season, week, pts, snaps, touches] across every season in `seasons`
+    that has real data for them.
+
+    A week is included only if the player actually has a stat line -- a
+    rookie, or a player who entered the league partway through this window,
+    simply starts wherever their real data starts rather than being padded
+    with zeros for seasons before they existed. `snaps` is offensive snaps
+    (None when Sleeper has no snap field for that game), and `touches` is
+    rush attempts + receptions, carried along for the hover readout. Points
+    per snap is NOT stored -- it's pts/snaps, computed in the browser, and
+    shipping it would be a third of the payload for no new information.
+
+    Reuses get_week_stats()'s cache, so nothing here re-fetches."""
     series = {e["pid"]: [] for e in pool}
     for season in seasons:
         for week in range(1, MAX_WEEKS_PER_SEASON + 1):
@@ -531,169 +383,37 @@ def build_trend_series(pool, seasons, scoring_field):
                 pts = stats.get(scoring_field)
                 if pts is None:
                     continue
-                pts = float(pts)
                 touches = (stats.get("rush_att") or 0) + (stats.get("rec") or 0)
-                ppt = round(pts / touches, 2) if touches > 0 else None
-                series[entry["pid"]].append([season, week, round(pts, 1), ppt, touches])
+                series[entry["pid"]].append(
+                    [season, week, round(float(pts), 1), snaps_of(stats), touches]
+                )
     return series
 
 
-# ---------------------------------------------------------------------------
-# Trend grid rendering
-# ---------------------------------------------------------------------------
-
-TREND_BUBBLE_MIN_R = 2.2
-TREND_BUBBLE_MAX_R = 7.0
-G_SEASON, G_WEEK, G_PTS, G_PPT, G_TOUCHES = 0, 1, 2, 3, 4
-
-
-def global_ppt_bounds(trend_series):
-    """(lo, hi) points-per-touch across EVERY game, for EVERY player in the
-    report -- not just one player's own games (games with undefined ppt,
-    i.e. 0 touches, are excluded from the bound calculation but still get
-    rendered at TREND_BUBBLE_MIN_R). This is what "relative to all players
-    in the report" means for the trend grid's bubble sizing: the same
-    points-per-touch value should render as the same-size bubble on every
-    player's card, so cards are visually comparable to each other, not just
-    internally consistent on their own scale. Position/season filtering
-    only changes which cards/points are visible; it never changes this
-    scale -- and neither does the top-40/full-pool distinction, so a bubble
-    doesn't resize when you switch views."""
-    vals = [g[G_PPT] for games in trend_series.values() for g in games if g[G_PPT] is not None]
-    if not vals:
-        return 0, 1
-    lo, hi = min(vals), max(vals)
-    if lo == hi:
-        hi = lo + 1
-    return lo, hi
-
-
-def render_trend_svg(points, ppt_lo, ppt_hi, width=300, height=140):
-    """Static-layout (positions never move) small-multiple line chart of one
-    player's chronological points series across however many seasons of
-    real data they have. Every week is a bubble, not just a line vertex --
-    bubble radius is that game's POINTS PER PLAY (touches), scaled against
-    `ppt_lo`/`ppt_hi` computed ACROSS THE WHOLE REPORT (see
-    global_ppt_bounds()), so bubble size is comparable player-to-player
-    (a 2.5 pt/touch week looks the same size on every card), not just
-    week-to-week within one player's own card. A game with 0 touches has no
-    defined points-per-play and renders at the minimum radius.
-
-    Points are split into one <g data-season="YYYY"> group per season
-    (chronological run, since the input is already sorted oldest -> newest)
-    so the season checkboxes rendered alongside the trend grid can hide/show
-    an entire season's segment across every card at once via a plain
-    display toggle -- x/y positions never move when a season is hidden, so
-    nothing needs to be recomputed client-side.
-
-    Each bubble carries only data-i (its index into that card's game list in
-    the page's TREND_GAMES map) rather than a full set of data-season/week/
-    pts/ppt/touches attributes: at ~21,000 bubbles across a 300-player pool
-    those repeated attribute names were about a megabyte of the output on
-    their own, and the numbers are already in the page once. Hover or click
-    resolves the index through one delegated listener on the grid. Fills and
-    strokes come from CSS classes (.tb / .tb.last) for the same reason.
-    Returns an empty-state SVG if `points` has fewer than 2 entries."""
-    margin_l, margin_r, margin_t, margin_b = 8, 8, 10, 18
-    plot_w = width - margin_l - margin_r
-    plot_h = height - margin_t - margin_b
-
-    if len(points) < 2:
-        return (
-            f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="Not enough data">'
-            f'<text x="{width/2}" y="{height/2}" text-anchor="middle" font-size="11" '
-            f'fill="#6B7280" font-family="IBM Plex Mono, monospace">no data yet</text></svg>'
-        )
-
-    pts_vals = [p[G_PTS] for p in points]
-    lo, hi = min(pts_vals), max(pts_vals)
-    hi = max(hi, lo + 1)
-    span = hi - lo
-    ppt_span = (ppt_hi - ppt_lo) or 1
-
-    def x_of(i):
-        return margin_l + (i / (len(points) - 1)) * plot_w
-
-    def y_of(v):
-        return margin_t + (1 - (v - lo) / span) * plot_h
-
-    def r_of(ppt):
-        if ppt is None:
-            return TREND_BUBBLE_MIN_R
-        frac = max(0.0, min(1.0, (ppt - ppt_lo) / ppt_span))
-        return TREND_BUBBLE_MIN_R + frac * (TREND_BUBBLE_MAX_R - TREND_BUBBLE_MIN_R)
-
-    path_pts = [(x_of(i), y_of(p[G_PTS])) for i, p in enumerate(points)]
-    parts = []
-
-    # Season boundary dashed guides + labels -- drawn once, independent of
-    # the per-season <g> grouping below (these stay visible regardless of
-    # which season checkboxes are ticked, so you can still see where a
-    # hidden season's gap sits).
-    last_season = points[0][G_SEASON]
-    parts.append(
-        f'<text x="{margin_l}" y="{height - 4}" font-size="8.5" fill="#6B7280" '
-        f'font-family="IBM Plex Mono, monospace">{html.escape(str(last_season))}</text>'
-    )
-    for i in range(1, len(points)):
-        if points[i][G_SEASON] != last_season:
-            gx = (x_of(i - 1) + x_of(i)) / 2
-            parts.append(
-                f'<line x1="{gx:.1f}" y1="{margin_t}" x2="{gx:.1f}" y2="{height - margin_b}" '
-                f'stroke="rgba(107,114,128,0.4)" stroke-width="1" stroke-dasharray="2,3"/>'
-            )
-            parts.append(
-                f'<text x="{gx + 3:.1f}" y="{height - 4}" font-size="8.5" fill="#6B7280" '
-                f'font-family="IBM Plex Mono, monospace">{html.escape(str(points[i][G_SEASON]))}</text>'
-            )
-            last_season = points[i][G_SEASON]
-
-    # Group points into contiguous per-season runs (safe since `points` is
-    # already chronological, so each season's games are one contiguous
-    # block) -- each run gets its own <path> (so a hidden season's line
-    # doesn't leave a stray connector) and its own <g data-season="...">
-    # wrapper for the checkbox toggle.
-    i = 0
-    n = len(points)
-    while i < n:
-        season = points[i][G_SEASON]
-        j = i
-        while j < n and points[j][G_SEASON] == season:
-            j += 1
-        run_path = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in path_pts[i:j])
-        group_parts = [f'<path class="tl" d="{run_path}"/>']
-        for k in range(i, j):
-            px, py = path_pts[k]
-            r = r_of(points[k][G_PPT])
-            cls = "tb last" if k == n - 1 else "tb"
-            group_parts.append(
-                f'<circle class="{cls}" cx="{px:.1f}" cy="{py:.1f}" r="{r:.2f}" data-i="{k}"/>'
-            )
-        parts.append(f'<g data-season="{html.escape(str(season))}">{"".join(group_parts)}</g>')
-        i = j
-
-    last_x, last_y = path_pts[-1]
-    parts.append(
-        f'<text x="{last_x:.1f}" y="{max(10.0, last_y - TREND_BUBBLE_MAX_R - 5):.1f}" text-anchor="end" '
-        f'font-size="9.5" fill="#E8E6DE" font-family="IBM Plex Mono, monospace">{points[-1][G_PTS]:.1f}</text>'
-    )
-
-    return (
-        f'<svg viewBox="0 0 {width} {height}" role="img" '
-        f'aria-label="Weekly points trend across {len(points)} games, bubble size is that '
-        f'game\'s points per play. Click any point for exact stats.">{"".join(parts)}</svg>'
-    )
+def snap_coverage(trend_series):
+    """(games_with_snaps, games_total) across the whole report. Sleeper's
+    snap field isn't guaranteed for older seasons, and the points-per-snap
+    grid is only as good as this ratio -- so it gets printed to the run log
+    and stated on the page rather than leaving a half-empty chart
+    unexplained."""
+    total = with_snaps = 0
+    for games in trend_series.values():
+        for g in games:
+            total += 1
+            if g[G_SNAPS]:
+                with_snaps += 1
+    return with_snaps, total
 
 
 # ---------------------------------------------------------------------------
-# Page shell
+# Page
 # ---------------------------------------------------------------------------
 
-EQUILIBRIUM_CSS = """
+PAGE_CSS = """
   :root{
     --bg:#0B0E14; --panel:#111621; --line:#1E2633;
-    --ink:#E8E6DE; --dim:#6B7280; --cyan:#4FD8E8;
-    --red:#FF5C5C; --green:#3ECF8E; --neutral:#9CA3AF;
+    --ink:#E8E6DE; --dim:#6B7280; --cyan:#4FD8E8; --amber:#D9A441;
+    --violet:#A78BFA;
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   body{
@@ -704,12 +424,14 @@ EQUILIBRIUM_CSS = """
   .eyebrow{ font-size:11px; letter-spacing:.18em; color:var(--cyan); text-transform:uppercase; }
   h1{ font-family:'Space Grotesk', sans-serif; font-size:22px; margin:4px 0 4px; }
   h2{ font-family:'Space Grotesk', sans-serif; font-size:15px; margin:0 0 4px; }
-  .sub{ color:var(--dim); font-size:12px; margin-bottom:6px; line-height:1.5; max-width:680px; }
+  .sub{ color:var(--dim); font-size:12px; margin-bottom:6px; line-height:1.55; max-width:760px; }
   .sub b{ color:var(--ink); }
-  .status{ color:var(--dim); font-size:11px; margin-bottom:18px; line-height:1.6; }
-  .section{ margin-top:34px; }
-  .section-head{ margin-bottom:12px; }
-  .filter-bar{ display:flex; gap:8px; margin:14px 0 6px; flex-wrap:wrap; align-items:center; }
+  .status{ color:var(--dim); font-size:11px; margin-bottom:4px; line-height:1.6; }
+  .status b{ color:var(--ink); }
+  .warn{ color:var(--amber); }
+  .section{ margin-top:36px; }
+  .section-head{ margin-bottom:10px; }
+  .filter-bar{ display:flex; gap:8px; margin:12px 0 6px; flex-wrap:wrap; align-items:center; }
   .filter-bar-label{ font-size:10px; color:var(--dim); letter-spacing:.08em; text-transform:uppercase; margin-right:2px; }
   .filter-btn{
     background:var(--panel); border:1px solid var(--line); color:var(--dim);
@@ -718,7 +440,6 @@ EQUILIBRIUM_CSS = """
   }
   .filter-btn:hover{ color:var(--ink); border-color:#39424f; }
   .filter-btn.active{ color:#0B0E14; background:var(--cyan); border-color:var(--cyan); font-weight:600; }
-  .filter-btn.season-btn.active{ background:var(--green); border-color:var(--green); }
   .filter-count{ font-size:10.5px; color:var(--dim); margin-left:4px; }
   .checkbox-btn{
     display:inline-flex; align-items:center; gap:6px; background:var(--panel); border:1px solid var(--line);
@@ -726,439 +447,327 @@ EQUILIBRIUM_CSS = """
     border-radius:6px; cursor:pointer; user-select:none;
   }
   .checkbox-btn input{ accent-color:var(--cyan); cursor:pointer; }
+  .sticky-controls{
+    position:sticky; top:0; z-index:20; background:linear-gradient(180deg, var(--bg) 82%, rgba(11,14,20,0));
+    padding-bottom:10px;
+  }
+  /* 6 seasons is ~85 games per card; narrow cards turn that into an
+     unreadable scribble, so cards are wide and the grid holds fewer
+     columns. */
+  .trend-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(430px, 1fr)); gap:14px; }
+  .trend-card{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px 10px; }
+  .trend-card-head{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px; gap:8px; }
+  .trend-card-head .name{ font-size:12.5px; font-weight:600; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .trend-card-head .meta{ font-size:10px; color:var(--dim); white-space:nowrap; }
+  .trend-card-head .stale{ color:var(--amber); }
+  .trend-card svg{ display:block; width:100%; height:auto; }
   .trend-readout{
-    font-size:10.5px; color:var(--dim); border-top:1px solid var(--line); margin-top:8px; padding-top:8px;
-    min-height:28px;
+    font-size:10.5px; color:var(--dim); border-top:1px solid var(--line); margin-top:6px; padding-top:7px;
+    min-height:26px;
   }
   .trend-readout.has-data{ color:var(--ink); }
-  .row{ display:flex; gap:0; flex-wrap:wrap; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-  .stage-wrap{ flex:1 1 620px; min-width:0; padding:16px; display:flex; flex-direction:column; gap:10px; background:var(--panel); }
-  .stage-wrap svg{ display:block; width:100%; height:auto; }
-  .eq-bubble{ transition: cx .35s ease, cy .35s ease, r .35s ease, fill .35s ease, stroke .35s ease; fill-opacity:.30; stroke-width:1.6; }
-  .eq-label, .eq-rsi{ transition: x .35s ease, y .35s ease, fill .35s ease; }
-  .eq-trail{ transition: d .35s ease, stroke .35s ease; fill:none; stroke-width:1.4; stroke-opacity:.55; stroke-linecap:round; }
-  .hud{ display:flex; justify-content:space-between; padding:0 8px; font-size:11px; color:var(--dim); }
-  .side-label{ display:flex; flex-direction:column; gap:2px; }
-  .side-label .n{ font-size:22px; font-weight:600; }
-  .side-label.left{ color:var(--red); }
-  .side-label.right{ text-align:right; color:var(--green); }
-  .scrubber{ padding:4px 12px 0; display:flex; flex-direction:column; gap:6px; }
-  .scrub-row{ display:flex; align-items:center; gap:12px; }
-  input[type=range]{ flex:1; -webkit-appearance:none; height:3px; background:var(--line); border-radius:2px; outline:none; }
-  input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:var(--cyan); cursor:pointer; border:2px solid var(--bg); }
-  input[type=range]::-moz-range-thumb{ width:14px; height:14px; border-radius:50%; background:var(--cyan); cursor:pointer; border:2px solid var(--bg); }
-  .scrubLabel{ font-size:11px; color:var(--cyan); white-space:nowrap; min-width:8ch; text-align:right; }
-  .scrubTs{ font-size:10.5px; color:var(--dim); text-align:center; }
-  aside{ width:280px; flex-shrink:0; background:#0d1119; border-left:1px solid var(--line); padding:22px 20px; display:flex; flex-direction:column; gap:14px; }
-  .legend{ display:flex; flex-direction:column; gap:0; max-height:52vh; overflow-y:auto; }
-  .legend::-webkit-scrollbar{ width:6px; }
-  .legend::-webkit-scrollbar-thumb{ background:var(--line); border-radius:3px; }
-  .leg-row{ display:flex; justify-content:space-between; align-items:center; font-size:11.5px; padding:6px 0; border-bottom:1px solid var(--line); gap:8px; }
-  .leg-row .name{ display:flex; align-items:center; gap:7px; min-width:0; }
-  .leg-row .nm{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .leg-row .pos{ color:var(--dim); font-size:9.5px; white-space:nowrap; }
-  .dot{ width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0; }
-  .leg-row .rsiv{ font-weight:600; }
-  .leg-row .meta{ color:var(--dim); font-size:10px; margin-left:6px; white-space:nowrap; }
-  .note{ font-size:11px; color:var(--dim); line-height:1.6; padding-top:10px; border-top:1px solid var(--line); }
-  .note b{ color:var(--ink); }
-  .unavailable{ padding:40px 20px; color:var(--dim); font-size:13px; }
-  .trend-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:14px; }
-  .trend-card{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px 10px; }
-  .trend-card-head{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; gap:8px; }
-  .trend-card-head .name{ font-size:12.5px; font-weight:600; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .trend-card-head .pos{ font-size:10px; color:var(--dim); white-space:nowrap; }
-  .trend-card-head .stale{ color:#D9A441; }
-  .trend-card svg{ display:block; width:100%; height:auto; }
-  .trend-card .tl{ fill:none; stroke:#4FD8E8; stroke-width:1.2; stroke-opacity:.55; }
-  .trend-card .tb{ fill:rgba(79,216,232,0.45); stroke:#4FD8E8; stroke-width:.8; stroke-opacity:.6; cursor:pointer; }
-  .trend-card .tb.last{ fill:#4FD8E8; stroke-width:1.4; stroke-opacity:1; }
-  .trend-card .tb:hover{ fill:#E8E6DE; stroke:#E8E6DE; }
-  @media (max-width: 760px){ aside{ width:100%; border-left:none; border-top:1px solid var(--line); } }
+  .trend-readout b{ color:var(--ink); }
+  /* chart internals */
+  /* Text and gridlines must never swallow a hover/click meant for a bubble --
+     the last-value label sits directly on top of the most recent game, which
+     is the point you most want to inspect. */
+  .trend-card svg text, .trend-card svg line{ pointer-events:none; }
+  .ax{ fill:#6B7280; font-size:8.5px; font-family:'IBM Plex Mono', monospace; }
+  .axline{ stroke:rgba(30,38,51,1); stroke-width:1; }
+  .grid{ stroke:rgba(107,114,128,0.16); stroke-width:1; }
+  .sbound{ stroke:rgba(107,114,128,0.4); stroke-width:1; stroke-dasharray:2,3; }
+  .tl{ fill:none; stroke-width:1.2; stroke-opacity:.55; }
+  .tb{ stroke-width:.8; stroke-opacity:.6; cursor:pointer; }
+  .tb.last{ stroke-width:1.4; stroke-opacity:1; }
+  .tb:hover{ fill:#E8E6DE; stroke:#E8E6DE; }
+  .m-pts .tl{ stroke:var(--cyan); }
+  .m-pts .tb{ fill:rgba(79,216,232,0.45); stroke:var(--cyan); }
+  .m-pts .tb.last{ fill:var(--cyan); }
+  .m-pps .tl{ stroke:var(--violet); }
+  .m-pps .tb{ fill:rgba(167,139,250,0.45); stroke:var(--violet); }
+  .m-pps .tb.last{ fill:var(--violet); }
+  .lastval{ fill:var(--ink); font-size:9.5px; font-family:'IBM Plex Mono', monospace; }
+  .empty{ fill:#6B7280; font-size:10.5px; font-family:'IBM Plex Mono', monospace; }
 """
 
-# Kept as a plain (non-f) string with __TOKEN__ placeholders: at this size the
-# doubled-brace escaping an f-string would need makes the JS unreadable and
-# very easy to break silently.
 PAGE_JS = r"""
-const SEASON_DATA = __SEASON_DATA__;
-const AVAILABLE_SEASONS = __AVAILABLE_SEASONS__;
 const TREND_GAMES = __TREND_GAMES__;
+const POOL = __POOL__;
+const SEASONS = __SEASONS__;
 const TOP_N = __TOP_N__;
-const TRAIL_LEN = __TRAIL_LEN__;
-const LABEL_LIMIT = __LABEL_LIMIT__;
-let currentSeason = __DEFAULT_SEASON__;
-let currentPosFilter = 'ALL';
+const SNAP_R = __SNAP_BOUNDS__;   // [min, max] snaps across every game in the report
+const GLOBAL_MAX = __GLOBAL_MAX__; // {pts: n, pps: n} report-wide maxima for shared scaling
 
-function getCSS(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
-const C_NEUTRAL = getCSS('--neutral'), C_GREEN = getCSS('--green'), C_RED = getCSS('--red');
+// game tuple indices
+const G_SEASON = 0, G_WEEK = 1, G_PTS = 2, G_SNAPS = 3, G_TOUCHES = 4;
 
-function colorFor(rsi){
-  if (rsi === null || rsi === undefined) return C_NEUTRAL;
-  if (rsi >= 70) return C_GREEN;
-  if (rsi <= 30) return C_RED;
-  return C_NEUTRAL;
+const GEO = { W: 440, H: 170, ML: 34, MR: 10, MT: 12, MB: 20 };
+// Max radius stays modest: at ~85 games per card a large bubble overlaps
+// its neighbours and hides the line it sits on.
+const R_MIN = 1.8, R_MAX = 5.2;
+
+let currentPos = 'ALL';
+const scaleMode = { pts: 'auto', pps: 'auto' };   // 'auto' = per player, 'shared' = whole report
+
+// The value a card plots, per metric. Points per snap is derived here rather
+// than shipped: a game with no snap data (Sleeper doesn't populate the field
+// for every historical season) has no defined efficiency and returns null,
+// which the renderer draws as a gap in the line rather than a zero.
+function valueOf(g, metric){
+  if (metric === 'pts') return g[G_PTS];
+  if (!g[G_SNAPS]) return null;
+  return g[G_PTS] / g[G_SNAPS];
+}
+function fmt(v, metric){
+  if (v === null || v === undefined) return 'n/a';
+  return metric === 'pts' ? v.toFixed(1) : v.toFixed(3);
+}
+// Axis ticks want fewer significant digits than the readout does, and every
+// tick on one axis must use the SAME number of them -- a "0 / 7.0 / 14" axis
+// reads as three different quantities. Precision is chosen from the axis
+// maximum, then applied to all three ticks.
+function tickDecimals(hi, metric){
+  if (metric === 'pts') return hi >= 10 ? 0 : 1;
+  return hi >= 1 ? 2 : 3;
+}
+function fmtTick(v, decimals){
+  return v.toFixed(decimals);
 }
 
-// The whole point-selection rule lives here: ALL means "the overall top
-// TOP_N of the pool" (so the scatter stays readable), any position means
-// "every player at that position in the pool", however many that is.
-function isVisible(p){
-  return currentPosFilter === 'ALL' ? (p.k <= TOP_N) : (p.p === currentPosFilter);
+function radiusOf(snaps){
+  if (!snaps) return R_MIN;
+  const span = (SNAP_R[1] - SNAP_R[0]) || 1;
+  const f = Math.max(0, Math.min(1, (snaps - SNAP_R[0]) / span));
+  return R_MIN + f * (R_MAX - R_MIN);
 }
 
-// One shared quadrant-panel controller, parameterized by which column
-// drives the x-axis ('v' = points, 'e' = points per touch). Both panels
-// share the same y-axis (rsi), the same bubble-size input (usage), and are
-// rebuilt from scratch whenever the season selector changes, since a
-// different season can have a different set of players/weeks entirely.
-//
-// Unlike the 8-player version, the x-axis bounds and the bubble radius
-// scale are computed over the VISIBLE set, not the whole pool -- otherwise
-// a 300-player pool's outliers would squash the top-40 view into the left
-// quarter of the panel.
-function makeQuadrantController(scope, valKey, unitSuffix){
-  const W = 900, H = 380, ML = 50, MR = 20, MT = 26, MB = 34;
+function esc(s){
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Draws one card's chart. Everything is positioned from the FULL game list,
+// so hiding a season with the checkboxes is a pure visibility toggle -- no
+// point ever moves, which is what makes the grid readable while you filter.
+function renderChart(svg, games, metric){
+  const W = GEO.W, H = GEO.H, ML = GEO.ML, MR = GEO.MR, MT = GEO.MT, MB = GEO.MB;
   const PW = W - ML - MR, PH = H - MT - MB;
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
 
-  const svg = document.getElementById('svg-' + scope);
-  const slider = document.getElementById('slider-' + scope);
-  const scrubLabel = document.getElementById('scrubLabel-' + scope);
-  const scrubTs = document.getElementById('scrubTs-' + scope);
-  const leftCountEl = document.getElementById('leftCount-' + scope);
-  const rightCountEl = document.getElementById('rightCount-' + scope);
-  const legendEl = document.getElementById('legend-' + scope);
-
-  let all = [], weeks = [], vis = [], nodes = [];
-  let X_MIN = 0, X_MAX = 1;
-
-  function pxOf(v){
-    if (v === null || v === undefined) v = X_MIN;
-    v = Math.max(X_MIN, Math.min(X_MAX, v));
-    return ML + (v - X_MIN) / ((X_MAX - X_MIN) || 1) * PW;
-  }
-  function pyOf(rsi){
-    if (rsi === null || rsi === undefined) rsi = 50;
-    rsi = Math.max(0, Math.min(100, rsi));
-    return MT + (1 - rsi / 100) * PH;
+  const vals = games.map(function(g){ return valueOf(g, metric); });
+  const real = vals.filter(function(v){ return v !== null && v !== undefined; });
+  if (real.length < 2){
+    svg.innerHTML = '<text class="empty" x="' + (W / 2) + '" y="' + (H / 2) + '" text-anchor="middle">' +
+      (metric === 'pps' ? 'no snap data' : 'no data yet') + '</text>';
+    return;
   }
 
-  function computeBounds(){
-    let lo = Infinity, hi = -Infinity;
-    for (const p of vis){
-      const col = p[valKey];
-      for (let i = 0; i < col.length; i++){
-        const v = col[i];
-        if (v === null || v === undefined) continue;
-        if (v < lo) lo = v;
-        if (v > hi) hi = v;
-      }
+  // Points and points-per-snap are both floor-at-zero quantities, so the
+  // axis always starts at 0 -- a chart that starts at the player's own
+  // minimum exaggerates ordinary week-to-week noise into a cliff.
+  const lo = 0;
+  const hi = scaleMode[metric] === 'shared' ? GLOBAL_MAX[metric] : Math.max.apply(null, real);
+  const span = (hi - lo) || 1;
+
+  const xOf = function(i){ return ML + (games.length === 1 ? PW / 2 : (i / (games.length - 1)) * PW); };
+  const yOf = function(v){ return MT + (1 - (v - lo) / span) * PH; };
+
+  const parts = [];
+
+  // y-axis: three labeled ticks with faint gridlines, so a value can be read
+  // off the chart instead of only via hover.
+  const dec = tickDecimals(hi, metric);
+  [lo, lo + span / 2, hi].forEach(function(t){
+    const y = yOf(t);
+    parts.push('<line class="grid" x1="' + ML + '" y1="' + y.toFixed(1) + '" x2="' + (W - MR) + '" y2="' + y.toFixed(1) + '"/>');
+    parts.push('<text class="ax" x="' + (ML - 5) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end">' +
+      fmtTick(t, dec) + '</text>');
+  });
+  parts.push('<line class="axline" x1="' + ML + '" y1="' + MT + '" x2="' + ML + '" y2="' + (H - MB) + '"/>');
+
+  // Season boundary guides + labels, drawn once and always visible so a
+  // hidden season still reads as a gap rather than a squeeze.
+  let last = games[0][G_SEASON];
+  parts.push('<text class="ax" x="' + (ML + 2) + '" y="' + (H - 5) + '">' + esc(last) + '</text>');
+  for (let i = 1; i < games.length; i++){
+    if (games[i][G_SEASON] !== last){
+      const gx = (xOf(i - 1) + xOf(i)) / 2;
+      parts.push('<line class="sbound" x1="' + gx.toFixed(1) + '" y1="' + MT + '" x2="' + gx.toFixed(1) + '" y2="' + (H - MB) + '"/>');
+      parts.push('<text class="ax" x="' + (gx + 3).toFixed(1) + '" y="' + (H - 5) + '">' + esc(games[i][G_SEASON]) + '</text>');
+      last = games[i][G_SEASON];
     }
-    if (lo === Infinity){ lo = 0; hi = 1; }
-    const pad = Math.max(0.1, (hi - lo) * 0.1);
-    X_MIN = Math.max(0, lo - pad);
-    X_MAX = (hi + pad) || 1;
   }
 
-  function initSvg(){
-    nodes = [];
-    if (!all.length){
-      svg.innerHTML = '<text x="' + (W/2) + '" y="' + (H/2) + '" text-anchor="middle" font-size="12" ' +
-        'fill="#6B7280" font-family="IBM Plex Mono, monospace">No data for this season</text>';
-      return;
-    }
-    const midY = pyOf(50);
-    const parts = [
-      '<line x1="'+ML+'" y1="'+midY.toFixed(1)+'" x2="'+(W-MR)+'" y2="'+midY.toFixed(1)+'" stroke="rgba(107,114,128,0.35)" stroke-width="1" stroke-dasharray="3,5"/>',
-      '<text x="'+ML+'" y="'+(MT-8)+'" font-size="10" fill="#6B7280">INDEX 100 &middot; hot</text>',
-      '<text id="axLo-'+scope+'" x="'+ML+'" y="'+(H-MB+16)+'" font-size="10" fill="#6B7280"></text>',
-      '<text id="axHi-'+scope+'" x="'+(W-MR)+'" y="'+(H-MB+16)+'" text-anchor="end" font-size="10" fill="#6B7280"></text>',
-      '<text x="'+ML+'" y="'+(H-MB+28)+'" font-size="10" fill="#6B7280">INDEX 0 &middot; cold</text>',
-      '<line x1="'+ML+'" y1="'+(H-MB)+'" x2="'+(W-MR)+'" y2="'+(H-MB)+'" stroke="rgba(30,38,51,1)" stroke-width="1"/>'
-    ];
-    // One set of elements per player in the season, created once. Filtering
-    // and scrubbing only ever mutate attributes -- nothing is re-created,
-    // which is what keeps a 300-node panel smooth.
-    all.forEach(function(p){
-      const id = scope + '-' + p.i;
-      parts.push('<path class="eq-trail" id="t-'+id+'" d=""/>');
-      parts.push('<circle class="eq-bubble" id="b-'+id+'" cx="0" cy="0" r="0"><title></title></circle>');
-      parts.push('<text class="eq-label" id="l-'+id+'" x="0" y="0" text-anchor="middle" font-size="11" font-weight="600"></text>');
-      parts.push('<text class="eq-rsi" id="r-'+id+'" x="0" y="0" text-anchor="middle" font-size="9.5" fill="rgba(232,230,222,0.55)"></text>');
-    });
-    svg.innerHTML = parts.join('');
-    all.forEach(function(p){
-      const id = scope + '-' + p.i;
-      nodes.push({
-        p: p,
-        trail: document.getElementById('t-'+id),
-        bubble: document.getElementById('b-'+id),
-        title: document.querySelector('#b-'+id+' title'),
-        label: document.getElementById('l-'+id),
-        rsi: document.getElementById('r-'+id)
-      });
-    });
-  }
-
-  function renderWeek(wi){
-    if (!all.length || !weeks.length){
-      leftCountEl.textContent = '0'; rightCountEl.textContent = '0';
-      scrubTs.textContent = 'Showing: n/a'; scrubLabel.textContent = 'n/a';
-      legendEl.innerHTML = '';
-      return;
-    }
-    wi = Math.max(0, Math.min(weeks.length - 1, wi));
-
-    const visIds = new Set(vis.map(function(p){ return p.i; }));
-
-    // Bubble radius scale: usage share across the visible players only.
-    let uLo = Infinity, uHi = -Infinity;
-    vis.forEach(function(p){
-      const u = p.u[wi];
-      if (u < uLo) uLo = u;
-      if (u > uHi) uHi = u;
-    });
-    if (uLo === Infinity){ uLo = 0; uHi = 1; }
-    const uSpan = (uHi - uLo) || 1;
-    // Bubbles shrink as the crowd grows, so a 90-player position view
-    // doesn't turn into overlapping discs.
-    const rMax = vis.length > 60 ? 14 : (vis.length > 25 ? 18 : 26);
-    const rMin = vis.length > 60 ? 3.5 : 6;
-
-    // Only the leaders on the current x-axis get a name label -- 90 labels
-    // at once is unreadable. Everything else keeps its hover tooltip.
-    const ranked = vis.slice().sort(function(a, b){
-      const av = a[valKey][wi], bv = b[valKey][wi];
-      return (bv === null || bv === undefined ? -1 : bv) - (av === null || av === undefined ? -1 : av);
-    });
-    const labelled = new Set(ranked.slice(0, LABEL_LIMIT).map(function(p){ return p.i; }));
-
-    let left = 0, right = 0;
-    const legendRows = [];
-
-    nodes.forEach(function(n){
-      const p = n.p;
-      const on = visIds.has(p.i);
-      const disp = on ? '' : 'none';
-      n.bubble.style.display = disp;
-      n.trail.style.display = disp;
-      n.label.style.display = disp;
-      n.rsi.style.display = disp;
-      if (!on) return;
-
-      const val = p[valKey][wi];
-      const hasVal = val !== null && val !== undefined;
-      const rsiRaw = p.r[wi];
-      const rsi = (rsiRaw === null || rsiRaw === undefined) ? 50 : rsiRaw;
-      const color = colorFor(rsiRaw);
-      const r = hasVal ? (rMin + ((p.u[wi] - uLo) / uSpan) * (rMax - rMin)) : 0;
-      const px = pxOf(val), py = pyOf(rsi);
-
-      n.bubble.setAttribute('cx', px.toFixed(1));
-      n.bubble.setAttribute('cy', py.toFixed(1));
-      n.bubble.setAttribute('r', r.toFixed(1));
-      n.bubble.setAttribute('fill', color);
-      n.bubble.setAttribute('stroke', color);
-      n.title.textContent = p.n + ' (' + p.p + ' · ' + p.t + ') — ' +
-        (hasVal ? val.toFixed(2) + unitSuffix : 'n/a') +
-        ', index ' + ((rsiRaw === null || rsiRaw === undefined) ? '—' : Math.round(rsiRaw)) +
-        ', usage ' + (p.u[wi] * 100).toFixed(0) + '%';
-
-      const showLabel = hasVal && labelled.has(p.i);
-      n.label.style.display = showLabel ? '' : 'none';
-      n.rsi.style.display = showLabel ? '' : 'none';
-      if (showLabel){
-        n.label.setAttribute('x', px.toFixed(1));
-        n.label.setAttribute('y', (py - r - 8).toFixed(1));
-        n.label.setAttribute('fill', color);
-        n.label.textContent = p.n;
-        n.rsi.setAttribute('x', px.toFixed(1));
-        n.rsi.setAttribute('y', (py + r + 14).toFixed(1));
-        n.rsi.textContent = ((rsiRaw === null || rsiRaw === undefined) ? '—' : Math.round(rsiRaw)) +
-          ' · ' + val.toFixed(2) + unitSuffix;
-      }
-
-      // Trail: two points, from (TRAIL_LEN - 1) weeks back straight to now.
-      // Derived here rather than shipped in the JSON.
-      const si = Math.max(0, wi - (TRAIL_LEN - 1));
-      const sv = p[valKey][si];
-      if (si !== wi && hasVal && sv !== null && sv !== undefined){
-        const sx = pxOf(sv), sy = pyOf(p.r[si]);
-        n.trail.setAttribute('d', 'M ' + sx.toFixed(1) + ',' + sy.toFixed(1) + ' L ' + px.toFixed(1) + ',' + py.toFixed(1));
+  // One <g> per season for the checkbox toggle. Within a season the line is
+  // broken wherever the value is null, so a stretch with no snap data reads
+  // as a gap instead of being bridged by a straight line that implies data
+  // we don't have.
+  let i = 0;
+  const lastRealIdx = vals.reduce(function(acc, v, idx){ return (v === null || v === undefined) ? acc : idx; }, -1);
+  while (i < games.length){
+    const season = games[i][G_SEASON];
+    let j = i;
+    while (j < games.length && games[j][G_SEASON] === season) j++;
+    const g = [];
+    let run = [];
+    for (let k = i; k <= j; k++){
+      const v = (k < j) ? vals[k] : null;
+      if (v === null || v === undefined){
+        if (run.length > 1){
+          g.push('<path class="tl" d="M ' + run.map(function(p){ return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' L ') + '"/>');
+        }
+        run = [];
       } else {
-        n.trail.setAttribute('d', '');
+        run.push([xOf(k), yOf(v)]);
       }
-      n.trail.setAttribute('stroke', color);
-
-      if (rsi < 49) left++; else if (rsi > 51) right++;
-      legendRows.push({ p: p, color: color, rsi: rsi, rsiRaw: rsiRaw, val: val, hasVal: hasVal });
-    });
-
-    document.getElementById('axLo-' + scope).textContent = X_MIN.toFixed(1) + unitSuffix;
-    document.getElementById('axHi-' + scope).textContent = X_MAX.toFixed(1) + unitSuffix + ' →';
-    leftCountEl.textContent = left;
-    rightCountEl.textContent = right;
-    scrubTs.textContent = 'Showing: week ' + weeks[wi] + ' of ' + currentSeason +
-      ' · ' + vis.length + ' players' + (currentPosFilter === 'ALL' ? ' (top ' + TOP_N + ')' : ' (' + currentPosFilter + ')');
-    scrubLabel.textContent = 'Week ' + weeks[wi];
-
-    legendRows.sort(function(a, b){ return b.rsi - a.rsi; });
-    legendEl.innerHTML = legendRows.map(function(row){
-      const rsiDisp = (row.rsiRaw === null || row.rsiRaw === undefined) ? '—' : Math.round(row.rsiRaw);
-      const valDisp = row.hasVal ? row.val.toFixed(2) + unitSuffix : 'n/a';
-      return '<div class="leg-row">' +
-        '<span class="name"><span class="dot" style="background:' + row.color + '"></span>' +
-        '<span class="nm">' + row.p.n + '</span><span class="pos">' + row.p.p + ' · ' + row.p.t + '</span></span>' +
-        '<span><span class="rsiv" style="color:' + row.color + '">' + rsiDisp + '</span>' +
-        '<span class="meta">' + valDisp + ' · ' + (row.p.u[wi] * 100).toFixed(0) + '%</span></span>' +
-        '</div>';
-    }).join('');
+    }
+    for (let k = i; k < j; k++){
+      const v = vals[k];
+      if (v === null || v === undefined) continue;
+      g.push('<circle class="tb' + (k === lastRealIdx ? ' last' : '') + '" cx="' + xOf(k).toFixed(1) +
+        '" cy="' + yOf(v).toFixed(1) + '" r="' + radiusOf(games[k][G_SNAPS]).toFixed(2) + '" data-i="' + k + '"/>');
+    }
+    parts.push('<g data-season="' + esc(season) + '">' + g.join('') + '</g>');
+    i = j;
   }
 
-  function refilter(){
-    vis = all.filter(isVisible);
-    computeBounds();
-    renderWeek(+slider.value);
+  if (lastRealIdx >= 0){
+    const lx = xOf(lastRealIdx), ly = yOf(vals[lastRealIdx]);
+    parts.push('<text class="lastval" x="' + lx.toFixed(1) + '" y="' + Math.max(10, ly - R_MAX - 5).toFixed(1) +
+      '" text-anchor="end">' + fmt(vals[lastRealIdx], metric) + '</text>');
   }
 
-  function loadSeason(season){
-    const d = SEASON_DATA[season] || { weeks: [], players: [] };
-    weeks = d.weeks;
-    all = d.players.map(function(p, i){ p.i = i; return p; });
-    vis = all.filter(isVisible);
-    computeBounds();
-    slider.max = Math.max(0, weeks.length - 1);
-    slider.value = Math.max(0, weeks.length - 1);
-    initSvg();
-    renderWeek(weeks.length - 1);
-  }
-
-  slider.addEventListener('input', function(){ renderWeek(+slider.value); });
-  return { loadSeason: loadSeason, refilter: refilter };
+  svg.innerHTML = parts.join('');
+  applySeasonToggleTo(svg);
 }
 
-const panel1 = makeQuadrantController('p1', 'v', 'pt');
-const panel2 = makeQuadrantController('p2', 'e', 'pt/tch');
+// Cards are drawn only once they scroll into view. With a 300-player pool
+// across two grids that's 600 charts; drawing them all up front would stall
+// the page for seconds, and most are never looked at.
+const drawn = new WeakSet();
+function drawCard(card){
+  const svg = card.querySelector('svg');
+  const games = TREND_GAMES[card.getAttribute('data-pid')] || [];
+  renderChart(svg, games, card.getAttribute('data-metric'));
+  drawn.add(card);
+}
+const observer = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+  entries.forEach(function(e){
+    if (e.isIntersecting && !drawn.has(e.target)) drawCard(e.target);
+  });
+}, { rootMargin: '300px' }) : null;
 
+function observeAll(){
+  document.querySelectorAll('.trend-card').forEach(function(c){
+    if (observer) observer.observe(c); else drawCard(c);
+  });
+}
+
+function redrawMetric(metric){
+  document.querySelectorAll('.trend-card[data-metric="' + metric + '"]').forEach(function(c){
+    if (drawn.has(c)) drawCard(c);
+  });
+}
+
+// --- filters --------------------------------------------------------------
+// ALL = the overall top TOP_N of the pool, so the grid stays scannable.
+// A position = every player at that position in the pool, however many.
 function applyPositionFilter(pos){
-  currentPosFilter = pos;
+  currentPos = pos;
   document.querySelectorAll('#posFilter .filter-btn').forEach(function(b){
     b.classList.toggle('active', b.getAttribute('data-pos') === pos);
   });
-  panel1.refilter();
-  panel2.refilter();
-
   let shown = 0;
-  document.querySelectorAll('#trendGrid .trend-card').forEach(function(c){
+  document.querySelectorAll('.trend-card').forEach(function(c){
     const ok = pos === 'ALL' ? (+c.getAttribute('data-rank') <= TOP_N) : (c.getAttribute('data-pos') === pos);
     c.style.display = ok ? '' : 'none';
-    if (ok) shown++;
+    if (ok && c.getAttribute('data-metric') === 'pts') shown++;
   });
   document.getElementById('posCount').textContent =
     pos === 'ALL' ? ('top ' + TOP_N + ' of the pool') : (shown + ' ' + pos + 's in the pool');
-  document.getElementById('trendCount').textContent = shown + ' cards';
+  document.querySelectorAll('.gridCount').forEach(function(el){ el.textContent = shown + ' cards'; });
 }
 
-function applySeason(season){
-  currentSeason = season;
-  panel1.loadSeason(season);
-  panel2.loadSeason(season);
-  document.querySelectorAll('#seasonFilter .season-btn').forEach(function(b){
-    b.classList.toggle('active', b.getAttribute('data-season') === season);
+function checkedSeasons(){
+  const s = new Set();
+  document.querySelectorAll('.season-cb:checked').forEach(function(cb){ s.add(cb.value); });
+  return s;
+}
+function applySeasonToggleTo(svg){
+  const on = checkedSeasons();
+  svg.querySelectorAll('g[data-season]').forEach(function(g){
+    g.style.display = on.has(g.getAttribute('data-season')) ? '' : 'none';
   });
 }
-
-document.getElementById('posFilter').addEventListener('click', function(e){
-  const btn = e.target.closest('.filter-btn');
-  if (!btn) return;
-  applyPositionFilter(btn.getAttribute('data-pos'));
-});
-document.getElementById('seasonFilter').addEventListener('click', function(e){
-  const btn = e.target.closest('.season-btn');
-  if (!btn) return;
-  applySeason(btn.getAttribute('data-season'));
-});
-
-if (AVAILABLE_SEASONS.length){ applySeason(currentSeason); }
-applyPositionFilter('ALL');
-
-// -- 4-season trend grid: season checkboxes + hover/click to inspect --
-// Toggling a season checkbox hides/shows every <g data-season="YYYY">
-// group across every trend card at once (positions never move -- this is
-// a pure visibility toggle, same principle as the position filter).
-function applyTrendSeasonToggle(){
-  const checked = new Set(
-    Array.prototype.slice.call(document.querySelectorAll('.trend-season-cb:checked')).map(function(cb){ return cb.value; })
-  );
-  document.querySelectorAll('#trendGrid g[data-season]').forEach(function(g){
-    g.style.display = checked.has(g.getAttribute('data-season')) ? '' : 'none';
-  });
+function applySeasonToggle(){
+  document.querySelectorAll('.trend-card svg').forEach(applySeasonToggleTo);
 }
-document.querySelectorAll('.trend-season-cb').forEach(function(cb){
-  cb.addEventListener('change', applyTrendSeasonToggle);
-});
-applyTrendSeasonToggle();
 
-// One delegated listener for the whole grid rather than an onclick per
-// bubble: with a 300-player pool that's ~21,000 bubbles, and per-element
-// handlers (and per-element data attributes) were the bulk of the file.
-// The bubble carries only its index; the numbers live once in TREND_GAMES.
-function showTrendStats(circle){
+// --- readout --------------------------------------------------------------
+// One delegated listener per grid rather than a handler per bubble: at 300
+// players x 2 grids that's tens of thousands of points, and the numbers
+// already live once in TREND_GAMES.
+function showStats(circle){
   const card = circle.closest('.trend-card');
-  if (!card) return;
   const games = TREND_GAMES[card.getAttribute('data-pid')];
   if (!games) return;
   const g = games[+circle.getAttribute('data-i')];
   if (!g) return;
-  const el = card.querySelector('.trend-readout');
-  el.innerHTML = '<b>' + g[0] + ' wk' + g[1] + ':</b> ' + g[2].toFixed(1) + 'pt · ' +
-    (g[3] === null ? 'n/a' : g[3].toFixed(2)) + ' pt/play · ' + g[4] + ' touches';
-  el.classList.add('has-data');
+  const pps = g[G_SNAPS] ? (g[G_PTS] / g[G_SNAPS]) : null;
+  card.querySelector('.trend-readout').innerHTML =
+    '<b>' + g[G_SEASON] + ' wk' + g[G_WEEK] + ':</b> ' + g[G_PTS].toFixed(1) + ' pt · ' +
+    (g[G_SNAPS] === null ? 'snaps n/a' : g[G_SNAPS] + ' snaps') + ' · ' +
+    (pps === null ? 'pt/snap n/a' : pps.toFixed(3) + ' pt/snap') + ' · ' + g[G_TOUCHES] + ' touches';
+  card.querySelector('.trend-readout').classList.add('has-data');
 }
-const grid = document.getElementById('trendGrid');
-if (grid){
+
+document.querySelectorAll('.trend-grid').forEach(function(grid){
   ['click', 'mouseover'].forEach(function(evt){
     grid.addEventListener(evt, function(e){
       const c = e.target.closest('circle.tb');
-      if (c) showTrendStats(c);
+      if (c) showStats(c);
     });
   });
-}
+});
+
+document.getElementById('posFilter').addEventListener('click', function(e){
+  const btn = e.target.closest('.filter-btn');
+  if (btn) applyPositionFilter(btn.getAttribute('data-pos'));
+});
+document.querySelectorAll('.season-cb').forEach(function(cb){
+  cb.addEventListener('change', applySeasonToggle);
+});
+document.querySelectorAll('.scale-toggle').forEach(function(bar){
+  bar.addEventListener('click', function(e){
+    const btn = e.target.closest('.filter-btn');
+    if (!btn) return;
+    const metric = bar.getAttribute('data-metric');
+    scaleMode[metric] = btn.getAttribute('data-scale');
+    bar.querySelectorAll('.filter-btn').forEach(function(b){
+      b.classList.toggle('active', b.getAttribute('data-scale') === scaleMode[metric]);
+    });
+    redrawMetric(metric);
+  });
+});
+
+applyPositionFilter('ALL');
+observeAll();
 """
 
 
-def render_html(frames_by_season, trend_series, pool, default_season, season, current_week,
-                season_type, scoring_label, watchlist_missing, now, trend_seasons_label, trend_seasons,
-                ranking_season, rank_week, rank_by, pool_size, top_n, selection_mode):
-    """Self-contained HTML page: two scrubbable quadrant panels (points
-    scored / points per touch, both x hot-cold index) that share a SEASON
-    SELECTOR (any season in `frames_by_season` that actually has data) and
-    a position filter, plus a 4-season trend grid -- same visual language
-    as the moneyflow-update Equilibrium quadrant panels, fed real Sleeper
-    data instead of yfinance OHLC.
-
-    The position filter is the load-bearing control now that the report is
-    a 300-player pool: ALL plots the top `top_n` by ranking-season points,
-    any position plots every player at that position in the pool."""
+def render_html(pool, trend_series, seasons, seasons_label, scoring_label, ranking_season, rank_week,
+                rank_by, pool_size, top_n, selection_mode, watchlist_missing, now, snap_cov):
+    """Self-contained page: two grids of small-multiple trend charts (weekly
+    points, and points per snap), sharing a position filter, a season filter
+    and a hover readout. Charts are drawn client-side from TREND_GAMES."""
     as_of = now.strftime("%Y-%m-%d %H:%M UTC")
-    available_seasons = sorted(frames_by_season.keys())  # oldest -> newest
 
-    if not available_seasons and not any(trend_series.values()):
-        body = """
-<div class="eyebrow">Fantasy Quadrant</div>
-<h1>Hot/Cold Index &times; Weekly Performance</h1>
-<div class="unavailable">No weekly stats available yet from Sleeper for any of the last few seasons --
-check back once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's player
-directory.</div>"""
-        return _wrap_html(body)
-
-    missing_note = ""
-    if watchlist_missing:
-        missing_note = (
-            "<br><b>Not found on Sleeper this run:</b> "
-            + html.escape(", ".join(watchlist_missing))
-            + " -- check spelling in FANTASY_WATCHLIST, or they may not be rostered/active."
-        )
+    if not pool or not any(trend_series.values()):
+        return _wrap_html("""
+<div class="eyebrow">Fantasy Trends</div>
+<h1>Weekly Points &amp; Points Per Snap</h1>
+<div class="sub" style="padding:30px 0">No weekly stats available from Sleeper for any season in the
+window -- check back once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's
+player directory.</div>""")
 
     all_positions = sorted(
         {p["pos"] for p in pool},
@@ -1173,208 +782,161 @@ directory.</div>"""
         f'<span style="opacity:.6">{pos_counts.get(pos, 0)}</span></button>'
         for pos in all_positions
     )
-    season_buttons = "".join(
-        f'<button class="filter-btn season-btn{" active" if s == default_season else ""}" '
-        f'data-season="{html.escape(s)}">{html.escape(s)}</button>'
-        for s in available_seasons
-    )
-    trend_season_checkboxes = "".join(
-        f'<label class="checkbox-btn"><input type="checkbox" class="trend-season-cb" '
-        f'value="{html.escape(s)}" checked> {html.escape(s)}</label>'
-        for s in trend_seasons
+    season_checkboxes = "".join(
+        f'<label class="checkbox-btn"><input type="checkbox" class="season-cb" value="{html.escape(s)}" checked>'
+        f' {html.escape(s)}</label>'
+        for s in seasons
     )
 
-    # Compact, column-oriented payload. Keys are one letter each and the
-    # per-week values are parallel arrays rather than a dict per week --
-    # at 300 players x ~18 weeks x 4 seasons the repeated key names were by
-    # far the biggest thing in the file.
-    season_data = {}
-    for s, plist in frames_by_season.items():
-        season_data[s] = {
-            "weeks": plist[0]["weeks"] if plist else [],
-            "players": [
-                {"n": p["name"], "p": p["pos"], "t": p["team"], "k": p["rank"],
-                 "v": p["pts"], "e": p["ppt"], "u": p["usage"], "r": p["rsi"]}
-                for p in plist
-            ],
-        }
+    # Bubble-size scale and the shared-y maxima are computed once, across
+    # every game of every player in the report -- so a bubble of a given size
+    # means the same snap count on every card and in both grids, and shared
+    # scaling doesn't shift when you filter.
+    snap_vals = [g[G_SNAPS] for games in trend_series.values() for g in games if g[G_SNAPS]]
+    snap_bounds = [min(snap_vals), max(snap_vals)] if snap_vals else [0, 1]
+    if snap_bounds[0] == snap_bounds[1]:
+        snap_bounds[1] = snap_bounds[0] + 1
+    pts_vals = [g[G_PTS] for games in trend_series.values() for g in games]
+    pps_vals = [g[G_PTS] / g[G_SNAPS] for games in trend_series.values() for g in games if g[G_SNAPS]]
+    global_max = {
+        "pts": round(max(pts_vals), 1) if pts_vals else 1,
+        "pps": round(max(pps_vals), 3) if pps_vals else 1,
+    }
 
-    ppt_lo, ppt_hi = global_ppt_bounds(trend_series)
-    trend_cards, trend_games = [], {}
-    for entry in pool:
-        pid = entry["pid"]
-        games = trend_series.get(pid, [])
-        if games:
-            trend_games[pid] = games
-        svg = render_trend_svg(games, ppt_lo, ppt_hi)
-        n_games = len(games)
-        span_note = f"{n_games} games" if n_games else "no data"
-        # Only flagged when the ranking number ISN'T from the current week --
-        # otherwise every card would carry a redundant badge.
-        stale_note = (f' &middot; <span class="stale">last: wk {entry["rank_from_week"]}</span>'
-                      if (entry.get("weeks_stale") or 0) > 0 else "")
-        rank_note = f"#{entry['rank']}"
-        trend_cards.append(f"""
-      <div class="trend-card" data-pid="{html.escape(pid)}" data-pos="{html.escape(entry['pos'])}" data-rank="{entry['rank']}">
+    def cards_for(metric):
+        out = []
+        for entry in pool:
+            games = trend_series.get(entry["pid"], [])
+            n = len(games)
+            stale = (entry.get("weeks_stale") or 0) > 0
+            stale_note = (f' &middot; <span class="stale">last: wk {entry["rank_from_week"]}</span>'
+                          if stale else "")
+            out.append(f"""
+      <div class="trend-card" data-pid="{html.escape(entry['pid'])}" data-pos="{html.escape(entry['pos'])}"
+           data-rank="{entry['rank']}" data-metric="{metric}">
         <div class="trend-card-head">
-          <span class="name">{rank_note} {html.escape(entry['name'])}</span>
-          <span class="pos">{html.escape(entry['pos'])} &middot; {html.escape(entry['team'])} &middot; {span_note}{stale_note}</span>
+          <span class="name">#{entry['rank']} {html.escape(entry['name'])}</span>
+          <span class="meta">{html.escape(entry['pos'])} &middot; {html.escape(entry['team'])} &middot;
+            {n} games{stale_note}</span>
         </div>
-        {svg}
-        <div class="trend-readout">Hover or click a point for that game's stats</div>
+        <svg class="m-{metric}" viewBox="0 0 440 170" role="img"
+             aria-label="{html.escape(entry['name'])} weekly {'points' if metric == 'pts' else 'points per snap'}"></svg>
+        <div class="trend-readout">Hover or click a point for that game's numbers</div>
       </div>""")
+        return "".join(out)
 
-    if season_type == "regular" and str(season) in frames_by_season:
-        live_note = f" &middot; live season {html.escape(str(season))}, through week {current_week}"
+    with_snaps, total_games = snap_cov
+    snap_pct = (100.0 * with_snaps / total_games) if total_games else 0
+    if snap_pct < 99:
+        snap_note = (f'<span class="warn">Snap counts are present for {snap_pct:.0f}% of games in this '
+                     f'window</span> ({with_snaps:,} of {total_games:,}) -- games without them are drawn '
+                     f'as gaps in the points-per-snap grid, never as zeros.')
     else:
-        live_note = (f" &middot; off-season -- defaulting to the most recent completed season "
-                     f"({html.escape(default_season or '?')})")
+        snap_note = f"Snap counts present for {with_snaps:,} of {total_games:,} games."
 
     stale_count = sum(1 for p in pool if (p.get("weeks_stale") or 0) > 0)
     if selection_mode == "ranked":
         if rank_by != "season":
-            basis = (f"the {html.escape(scoring_label)} points in <b>each player's own most recent "
-                     f"game</b>, as of <b>{html.escape(str(ranking_season))} week {rank_week}</b>")
-            basis_caveat = (
-                f" &mdash; a player on bye, hurt or inactive is ranked on the last week they actually "
-                f"played, not dropped"
-                + (f" ({stale_count} of the {len(pool)} are ranked on an earlier week; their trend cards "
-                   f"say <b>last: wk N</b>)" if stale_count else "")
-            )
+            basis = (f"the {html.escape(scoring_label)} points in <b>each player's own most recent game</b>, "
+                     f"as of <b>{html.escape(str(ranking_season))} week {rank_week}</b>")
+            caveat = (" &mdash; a player on bye, hurt or inactive is ranked on the last week they actually "
+                      "played, not dropped"
+                      + (f" ({stale_count} of {len(pool)} are ranked on an earlier week; their cards say "
+                         f"<b>last: wk N</b>)" if stale_count else ""))
         else:
             basis = (f"season-to-date {html.escape(scoring_label)} points in "
                      f"<b>{html.escape(str(ranking_season))}</b>")
-            basis_caveat = ""
-        selection_note = (
-            f"Pool = top <b>{pool_size}</b> players by {basis}{basis_caveat}. "
-            f"<b>ALL</b> plots the top {top_n} of that pool; picking a position plots "
-            f"<b>every</b> player at that position in the pool."
-        )
+            caveat = ""
+        selection_note = (f"Pool = top <b>{pool_size}</b> players by {basis}{caveat}. <b>ALL</b> shows the "
+                          f"top {top_n}; picking a position shows <b>every</b> player at that position in "
+                          f"the pool.")
     else:
-        selection_note = (f"Player list supplied via FANTASY_WATCHLIST ({len(pool)} players) -- ranking skipped. "
-                          f"ALL plots the first {top_n}; picking a position plots every one at that position.")
+        selection_note = (f"Player list supplied via FANTASY_WATCHLIST ({len(pool)} players) -- ranking "
+                          f"skipped. ALL shows the first {top_n}; picking a position shows every one at "
+                          f"that position.")
+
+    missing_note = ""
+    if watchlist_missing:
+        missing_note = ('<br><span class="warn">Not found on Sleeper this run:</span> '
+                        + html.escape(", ".join(watchlist_missing)))
+
+    def scale_toggle(metric):
+        return f"""
+  <div class="filter-bar scale-toggle" data-metric="{metric}">
+    <span class="filter-bar-label">Y-axis</span>
+    <button class="filter-btn active" data-scale="auto">Per player</button>
+    <button class="filter-btn" data-scale="shared">Shared across all</button>
+  </div>"""
 
     body = f"""
-<div class="eyebrow">Fantasy Quadrant</div>
-<h1>Hot/Cold Index &times; Weekly Performance</h1>
+<div class="eyebrow">Fantasy Trends</div>
+<h1>Weekly Points &amp; Points Per Snap</h1>
 <div class="sub">
-  <b>Y-axis (both quadrant panels)</b> = a {RSI_PERIOD}-week &quot;hot/cold index&quot; (RSI math run on
-  each player's own weekly fantasy points within the selected season, relative to their own recent
-  baseline, not other players). <b>Trail</b> = one line from {TRAIL_LEN - 1} weeks ago straight to this
-  week -- no simulated motion, every slider position is a real past week's stat line.
+  One card per player, {html.escape(seasons_label)}. Every week is a bubble <b>sized by that game's snap
+  count</b>, scaled across every game for every player in the report -- so bubble size means the same
+  thing on both grids and never changes when you filter. Dashed lines mark season boundaries.
+  <b>Hover or click any point</b> for that game's exact numbers.
 </div>
 <div class="status">
-  {len(pool)} players in report &middot; generated {html.escape(as_of)}{live_note}<br>
-  {selection_note}{missing_note}
+  {len(pool)} players &middot; {total_games:,} games &middot; generated {html.escape(as_of)}<br>
+  {selection_note}{missing_note}<br>
+  {snap_note}
 </div>
 
-<div class="filter-bar" id="posFilter">
-  <span class="filter-bar-label">Position</span>{filter_buttons}
-  <span class="filter-count" id="posCount"></span>
+<div class="sticky-controls">
+  <div class="filter-bar" id="posFilter">
+    <span class="filter-bar-label">Position</span>{filter_buttons}
+    <span class="filter-count" id="posCount"></span>
+  </div>
+  <div class="filter-bar" id="seasonFilter"><span class="filter-bar-label">Seasons</span>{season_checkboxes}</div>
 </div>
-<div class="filter-bar" id="seasonFilter"><span class="filter-bar-label">Season</span>{season_buttons}</div>
 
-<div class="section" id="sec-p1">
+<div class="section">
   <div class="section-head">
-    <h2>Hot/Cold Index &times; Points Scored</h2>
-    <div class="sub">X-axis = actual points scored that week ({html.escape(scoring_label)}). Bubble size =
-    usage share -- opportunities (carries + targets) as a share of the player's own team's total that
-    week. Axis range and bubble scale follow whichever players are currently shown, so the top-40 view
-    isn't squashed by the full pool's outliers. Only the week's leaders get name labels; hover any
-    bubble for the rest.</div>
+    <h2>Weekly Points <span class="filter-count gridCount"></span></h2>
+    <div class="sub">Y-axis = {html.escape(scoring_label)} fantasy points scored that week, starting at
+    zero. <b>Per player</b> scales each card to its own best week -- best for reading one player's shape.
+    <b>Shared across all</b> puts every card on the report-wide maximum ({global_max['pts']:.0f} pt), which
+    makes cards directly comparable but flattens the lower-scoring ones.</div>
   </div>
-  <div class="row">
-    <div class="stage-wrap">
-      <svg id="svg-p1" viewBox="0 0 900 380" preserveAspectRatio="xMidYMid meet"></svg>
-      <div class="hud">
-        <div class="side-label left">COLD (INDEX &lt; 50)<div class="n" id="leftCount-p1">0</div></div>
-        <div class="side-label right">HOT (INDEX &gt; 50)<div class="n" id="rightCount-p1">0</div></div>
-      </div>
-      <div class="scrubber">
-        <div class="scrub-row">
-          <input type="range" id="slider-p1" min="0" max="0" value="0">
-          <span class="scrubLabel" id="scrubLabel-p1">Week 1</span>
-        </div>
-        <div class="scrubTs" id="scrubTs-p1">Showing: Week 1</div>
-      </div>
-    </div>
-    <aside>
-      <div class="legend" id="legend-p1"></div>
-      <div class="note"><b>Points scored</b> is the volume/production read -- who actually put up the
-      most points, regardless of how efficiently.</div>
-    </aside>
-  </div>
+  {scale_toggle('pts')}
+  <div class="trend-grid" id="gridPts">{cards_for('pts')}</div>
 </div>
 
-<div class="section" id="sec-p2">
+<div class="section">
   <div class="section-head">
-    <h2>Hot/Cold Index &times; Points Per Touch</h2>
-    <div class="sub">X-axis = points scored PER TOUCH that week (touches = carries + receptions, not
-    targets). Same bubble sizing (usage share). This is the efficiency read instead of the volume
-    read.</div>
+    <h2>Points Per Snap <span class="filter-count gridCount"></span></h2>
+    <div class="sub">Y-axis = that week's points divided by offensive snaps played. This is the
+    efficiency read: it separates a player producing on limited playing time from one accumulating
+    points because he never leaves the field. A week with no snap data is a gap, not a zero. Shared
+    maximum is {global_max['pps']:.3f} pt/snap.</div>
   </div>
-  <div class="row">
-    <div class="stage-wrap">
-      <svg id="svg-p2" viewBox="0 0 900 380" preserveAspectRatio="xMidYMid meet"></svg>
-      <div class="hud">
-        <div class="side-label left">COLD (INDEX &lt; 50)<div class="n" id="leftCount-p2">0</div></div>
-        <div class="side-label right">HOT (INDEX &gt; 50)<div class="n" id="rightCount-p2">0</div></div>
-      </div>
-      <div class="scrubber">
-        <div class="scrub-row">
-          <input type="range" id="slider-p2" min="0" max="0" value="0">
-          <span class="scrubLabel" id="scrubLabel-p2">Week 1</span>
-        </div>
-        <div class="scrubTs" id="scrubTs-p2">Showing: Week 1</div>
-      </div>
-    </div>
-    <aside>
-      <div class="legend" id="legend-p2"></div>
-      <div class="note"><b>Points per touch</b> strips out volume -- a bell-cow back getting 20 mediocre
-      touches and a change-of-pace back getting 5 explosive ones can land in very different spots here
-      even in a week they scored the same total points.</div>
-    </aside>
-  </div>
-</div>
-
-<div class="section" id="sec-trend">
-  <div class="section-head">
-    <h2>4-Season Points Trend ({html.escape(trend_seasons_label)}) <span class="filter-count" id="trendCount"></span></h2>
-    <div class="sub">Weekly {html.escape(scoring_label)} points, chronological, across as much of the last
-    4 regular seasons as each player actually has -- a rookie or a recent addition just starts wherever
-    their real data starts. Each point is a bubble sized by that game's <b>points per play</b> (touches),
-    scaled <b>relative to every game, for every player, in this report</b> -- so bubble size never
-    changes when you filter. <b>Hover or click any point</b> to see that exact game's stats below its
-    card. Dashed lines always mark season boundaries, regardless of which seasons are checked below.
-    Cards follow the position filter above, and always cover the same 4-season span independent of the
-    season selected in the panels.</div>
-  </div>
-  <div class="filter-bar" id="trendSeasonToggle"><span class="filter-bar-label">Show seasons</span>{trend_season_checkboxes}</div>
-  <div class="trend-grid" id="trendGrid">{"".join(trend_cards)}</div>
+  {scale_toggle('pps')}
+  <div class="trend-grid" id="gridPps">{cards_for('pps')}</div>
 </div>
 
 <script>
-{_page_js(season_data, available_seasons, trend_games, default_season, top_n)}
+{_page_js(trend_series, pool, seasons, top_n, snap_bounds, global_max)}
 </script>
 """
     return _wrap_html(body)
 
 
-def _page_js(season_data, available_seasons, trend_games, default_season, top_n):
-    """Substitute the run's data into PAGE_JS. json.dumps with compact
-    separators throughout -- whitespace on a payload this size is measured
-    in hundreds of kilobytes."""
+def _page_js(trend_series, pool, seasons, top_n, snap_bounds, global_max):
+    """Substitute the run's data into PAGE_JS. Compact separators throughout
+    -- whitespace on a payload this size is measured in hundreds of KB."""
     def j(v):
         return json.dumps(v, separators=(",", ":"))
 
+    pool_light = [{"pid": p["pid"], "n": p["name"], "p": p["pos"], "t": p["team"], "k": p["rank"]}
+                  for p in pool]
     return (PAGE_JS
-            .replace("__SEASON_DATA__", j(season_data))
-            .replace("__AVAILABLE_SEASONS__", j(available_seasons))
-            .replace("__TREND_GAMES__", j(trend_games))
-            .replace("__DEFAULT_SEASON__", j(default_season))
+            .replace("__TREND_GAMES__", j({k: v for k, v in trend_series.items() if v}))
+            .replace("__POOL__", j(pool_light))
+            .replace("__SEASONS__", j(seasons))
             .replace("__TOP_N__", str(top_n))
-            .replace("__TRAIL_LEN__", str(TRAIL_LEN))
-            .replace("__LABEL_LIMIT__", str(LABEL_LIMIT)))
+            .replace("__SNAP_BOUNDS__", j(snap_bounds))
+            .replace("__GLOBAL_MAX__", j(global_max)))
 
 
 def _wrap_html(body):
@@ -1382,11 +944,11 @@ def _wrap_html(body):
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Fantasy Quadrant</title>
+<title>Fantasy Trends</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-<style>{EQUILIBRIUM_CSS}</style>
+<style>{PAGE_CSS}</style>
 </head>
 <body>
 {body}
@@ -1443,11 +1005,12 @@ def main():
     if not season:
         print("[warn] Sleeper state returned no season -- writing an 'unavailable' placeholder page.")
         with open("index.html", "w") as f:
-            f.write(render_html({}, {}, [], None, season, current_week, season_type, scoring_label,
-                                [], now, "", [], None, None, rank_by, pool_size, top_n, "ranked"))
+            f.write(render_html([], {}, [], "", scoring_label, None, None, rank_by, pool_size, top_n,
+                                "ranked", [], now, (0, 0)))
         return
 
     seasons = season_list(season, trend_seasons_back)
+    seasons_label = f"{seasons[0]}–{seasons[-1]}"
     is_live = bool(season_type == "regular" and current_week and current_week >= 1)
     live_season = season if is_live else None
     live_week = current_week if is_live else None
@@ -1455,16 +1018,15 @@ def main():
     print(f"[info] resolving ranking window across {seasons} "
           f"({'live -- capping ' + str(season) + ' at week ' + str(current_week) if is_live else 'off-season'})...")
     ranking_season, ranking_weeks, rank_week = pick_ranking_window(seasons, scoring_field, live_season, live_week)
-    default_season = ranking_season
-    print(f"[info] default season={default_season}, {len(ranking_weeks)} weeks of data, "
+    print(f"[info] ranking season={ranking_season}, {len(ranking_weeks)} weeks of data, "
           f"ranking on {'season totals' if rank_by == 'season' else 'each player last game as of week ' + str(rank_week)}")
 
     missing = []
     if manual_names:
         selection_mode = "manual"
         pool = resolve_watchlist_ids(players_dir, manual_names)
-        resolved_names = {p["name"] for p in pool}
-        missing = [n for n in manual_names if n not in resolved_names]
+        resolved = {p["name"] for p in pool}
+        missing = [n for n in manual_names if n not in resolved]
         print(f"[info] FANTASY_WATCHLIST set -- ranking skipped, {len(pool)} players resolved")
     else:
         selection_mode = "ranked"
@@ -1478,7 +1040,6 @@ def main():
                      else f"last game played through {ranking_season} week {rank_week}")
             print(f"[info] pool = top {len(pool)} ({'/'.join(positions)}) by {scoring_label} points, {basis}")
             if pool:
-                stale = sum(1 for p in pool if (p.get("weeks_stale") or 0) > 0)
                 head = ", ".join(
                     f"{p['rank']}.{p['name']} ({p['rank_pts']}"
                     + (f", wk{p['rank_from_week']}" if (p.get('weeks_stale') or 0) > 0 else "") + ")"
@@ -1486,78 +1047,66 @@ def main():
                 )
                 print(f"[info] top of pool: {head}")
                 if rank_by != "season":
+                    stale = sum(1 for p in pool if (p.get("weeks_stale") or 0) > 0)
                     print(f"[info] {stale} of {len(pool)} ranked on an earlier week (bye/inactive/injured)")
 
     if not pool:
         with open("index.html", "w") as f:
-            f.write(render_html({}, {}, [], default_season, season, current_week, season_type,
-                                scoring_label, missing, now, "", seasons, ranking_season, rank_week,
-                                rank_by, pool_size, top_n, selection_mode))
+            f.write(render_html([], {}, seasons, seasons_label, scoring_label, ranking_season, rank_week,
+                                rank_by, pool_size, top_n, selection_mode, missing, now, (0, 0)))
         print("[info] wrote index.html (empty-state)")
         return
 
-    print(f"[info] framing {len(pool)} players across seasons {seasons} "
-          f"(cached fetches reused from the ranking pass)...")
-    frames_by_season = build_frames_by_season(pool, seasons, players_dir, scoring_field,
-                                              live_season=live_season, live_week=live_week)
-    if default_season not in frames_by_season and frames_by_season:
-        default_season = sorted(frames_by_season.keys())[-1]
-    print(f"[info] seasons with data: {sorted(frames_by_season.keys())} -- default={default_season}")
-
-    print(f"[info] building {trend_seasons_back}-season trend history...")
+    print(f"[info] building {trend_seasons_back}-season trend history for {len(pool)} players "
+          f"({seasons_label})...")
     trend_series = build_trend_series(pool, seasons, scoring_field)
-    trend_seasons_label = f"{seasons[0]}–{seasons[-1]}" if seasons else "?"
+    snap_cov = snap_coverage(trend_series)
+    print(f"[info] snap counts present for {snap_cov[0]:,} of {snap_cov[1]:,} games "
+          f"({100.0 * snap_cov[0] / snap_cov[1]:.0f}%)" if snap_cov[1] else "[info] no games")
+    if snap_cov[1] and snap_cov[0] == 0:
+        print("[warn] NO snap data at all -- the points-per-snap grid will be empty. Check that "
+              f"Sleeper still populates {SNAP_FIELDS} in the stats payload.", file=sys.stderr)
 
     with open("index.html", "w") as f:
-        f.write(render_html(frames_by_season, trend_series, pool, default_season, season, current_week,
-                            season_type, scoring_label, missing, now, trend_seasons_label, seasons,
-                            ranking_season, rank_week, rank_by, pool_size, top_n, selection_mode))
+        f.write(render_html(pool, trend_series, seasons, seasons_label, scoring_label, ranking_season,
+                            rank_week, rank_by, pool_size, top_n, selection_mode, missing, now, snap_cov))
 
     size_mb = os.path.getsize("index.html") / (1024 * 1024)
-    print(f"[info] wrote index.html ({size_mb:.1f} MB, {len(pool)} players, "
-          f"{sum(len(v) for v in trend_series.values())} game bubbles)")
+    print(f"[info] wrote index.html ({size_mb:.1f} MB, {len(pool)} players, {snap_cov[1]:,} games)")
 
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
         basis = (f"**{ranking_season}** season-to-date totals" if rank_by == "season"
                  else f"**each player's most recent game** through {ranking_season} week {rank_week}")
         lines = [
-            f"## Fantasy Quadrant — {len(pool)} players, default season {default_season or 'n/a'}",
+            f"## Fantasy Trends — {len(pool)} players, {seasons_label}",
             "",
-            f"Pool ranked on {basis}; ALL view shows the top {top_n}, "
-            f"position views show the whole pool at that position.",
+            f"Pool ranked on {basis}; ALL view shows the top {top_n}, position views show the whole "
+            f"pool at that position. Snap counts present for {snap_cov[0]:,} of {snap_cov[1]:,} games.",
             "",
-            "| # | Player | Pos | Team | Last game | pt/tch | Index | Usage | Trend games |",
-            "|---|---|---|---|---|---|---|---|---|",
+            "| # | Player | Pos | Team | Last game | Snaps | pt/snap | Games |",
+            "|---|---|---|---|---|---|---|---|",
         ]
-        by_name = {p["name"]: p for p in frames_by_season.get(default_season, [])} if default_season else {}
         for entry in pool[:top_n]:
-            p = by_name.get(entry["name"])
-            n_games = len(trend_series.get(entry["pid"], []))
-            # The ranking number and the week it came from, so a stale entry
-            # is never read as last week's production.
-            stale = (entry.get("weeks_stale") or 0) > 0
-            last_game = (f"{entry['rank_pts']:.1f}" if entry["rank_pts"] is not None else "—")
-            if stale:
-                last_game += f" _(wk {entry['rank_from_week']})_"
-            if p and p["weeks"]:
-                # Efficiency/index/usage are read from the same week the
-                # ranking points came from, not blindly from the last frame.
-                try:
-                    wi = p["weeks"].index(entry["rank_from_week"])
-                except (ValueError, TypeError):
-                    wi = -1
-                ppt, rsi, usage = p["ppt"][wi], p["rsi"][wi], p["usage"][wi]
-                lines.append(
-                    f"| {entry['rank']} | {entry['name']} | {entry['pos']} | {entry['team']} | "
-                    f"{last_game} | {'n/a' if ppt is None else f'{ppt:.2f}'} | "
-                    f"{'n/a' if rsi is None else f'{rsi:.0f}'} | {usage*100:.0f}% | {n_games} |"
-                )
+            games = trend_series.get(entry["pid"], [])
+            last = None
+            for g in games:
+                if entry["rank_from_week"] is None or (g[G_SEASON] == str(ranking_season)
+                                                       and g[G_WEEK] == entry["rank_from_week"]):
+                    last = g
+            last = last or (games[-1] if games else None)
+            pts_cell = f"{entry['rank_pts']:.1f}" if entry["rank_pts"] is not None else "—"
+            if (entry.get("weeks_stale") or 0) > 0:
+                pts_cell += f" _(wk {entry['rank_from_week']})_"
+            if last and last[G_SNAPS]:
+                snaps_cell = str(last[G_SNAPS])
+                pps_cell = f"{last[G_PTS] / last[G_SNAPS]:.3f}"
             else:
-                lines.append(
-                    f"| {entry['rank']} | {entry['name']} | {entry['pos']} | {entry['team']} | "
-                    f"{last_game} | — | — | — | {n_games} |"
-                )
+                snaps_cell, pps_cell = "—", "—"
+            lines.append(
+                f"| {entry['rank']} | {entry['name']} | {entry['pos']} | {entry['team']} | "
+                f"{pts_cell} | {snaps_cell} | {pps_cell} | {len(games)} |"
+            )
         if missing:
             lines += ["", f"Not found on Sleeper: {', '.join(missing)}"]
         with open(summary_path, "a") as f:
