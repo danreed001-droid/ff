@@ -13,39 +13,58 @@ it.
 ## What it shows
 
 Three views, all filterable by position (QB/RB/WR/TE/ALL) via the buttons
-at the top:
+at the top. The two quadrant panels additionally share a **season
+selector** (buttons for whichever of the last 4 regular seasons actually
+have data) so you're not stuck looking only at the live season -- pick any
+of the last 4 years and its own week slider takes over:
 
 1. **Hot/cold index x points scored** -- the volume/production read. X-axis
    is actual points that week, Y-axis is a 4-week RSI on the player's own
-   points (same math as stock RSI, just relative to their own recent
-   baseline, not other players). Bubble size is usage share -- opportunities
-   (carries + targets) as a share of their own team's total that week.
+   points **within the selected season** (RSI resets at each season
+   boundary, since a hot streak shouldn't carry across an off-season). Same
+   math as stock RSI, just relative to their own recent baseline, not other
+   players. Bubble size is usage share -- opportunities (carries + targets)
+   as a share of their own team's total that week.
 2. **Hot/cold index x points per touch** -- the efficiency read. Same
-   y-axis, but the x-axis is points scored *per touch* (touches = carries +
-   receptions, not targets), so a low-usage player who was explosive on
-   limited touches shows up far right even in a week they didn't score much
-   in total.
+   y-axis, same season selector, but the x-axis is points scored *per
+   touch* (touches = carries + receptions, not targets), so a low-usage
+   player who was explosive on limited touches shows up far right even in a
+   week they didn't score much in total.
 3. **4-season points trend** -- a static small-multiple line chart per
    player, showing weekly points chronologically across as much of the last
    4 regular seasons as they actually have. Every week is a bubble, sized
-   by that game's touches (carries + receptions) and scaled **relative to
-   every game, for every player, in the report** -- so a given touch count
-   renders as the same size bubble on every player's card, letting you spot
-   a big workload at a glance across the whole grid, not just within one
-   card. A rookie or a recent addition just starts wherever their real data
-   starts (no padding with invented zeros for seasons before they existed).
-   Dashed lines mark season boundaries.
+   by that game's **points per play** (touches) and scaled **relative to
+   every game, for every player, in the report** -- so a given points-per-
+   play value renders as the same size bubble on every player's card. A
+   rookie or a recent addition just starts wherever their real data starts
+   (no padding with invented zeros for seasons before they existed). Dashed
+   lines mark season boundaries. Always covers the full 4-season span
+   regardless of which season is selected in the quadrant panels above --
+   it's the one view that isn't affected by the season selector.
 
-All three sections respect the same position filter (QB/RB/WR/TE/ALL) at
-the top -- it's a pure visibility toggle, not a data refetch or a
-rescaling: bubble sizes (usage share on the quadrant panels, touches on the
-trend grid) stay computed against the full unfiltered watchlist, so
-switching filters never changes what a given bubble size means.
+   This chart has two extra interactions of its own:
+   - **Season checkboxes** above the grid -- uncheck a season and every
+     card hides that season's line/bubbles at once (positions never move,
+     it's a pure visibility toggle, same principle as the position filter).
+   - **Click any point** to see that exact game's season, week, points,
+     points-per-play, and touch count in a small readout under that card.
 
-Both quadrant panels have their own independent slider; the trend grid is
-static (no slider -- it's already showing the full span). There's no
-simulation anywhere: every slider position is a real past week's box score
-pulled from Sleeper, not invented or interpolated motion.
+Position filtering is a pure visibility toggle across all three sections at
+once (every filterable element carries a `data-pos` attribute); it never
+changes bubble sizing math. There's no simulation anywhere: every slider
+position is a real past week's box score pulled from Sleeper, not invented
+or interpolated motion.
+
+**Off-season behavior:** Sleeper's `state/nfl` endpoint reports whichever
+season most recently had games -- during the off-season that's the season
+that just ended, with `season_type` something other than `"regular"`. This
+script treats that correctly: it fetches and shows the last 4 seasons'
+worth of quadrant + trend data regardless of whether a season is currently
+live, and defaults the season selector to the most recently *completed*
+season rather than showing an empty page. Only the live season's window is
+capped to the current week (via `season_type == "regular"`); every other
+season requests its full 1-18 week range, since `get_week_stats()`
+gracefully returns nothing for a week that doesn't exist.
 
 ## Data source
 
@@ -115,11 +134,9 @@ Other env vars (all optional, set in the workflow file or as repo secrets):
 - `FANTASY_SCORING` -- `"ppr"` (default), `"half_ppr"`, or `"std"`. Which
   Sleeper points field drives both quadrant panels' relevant axis and the
   trend grid.
-- `FANTASY_WEEKS` -- how many recent weeks the two quadrant panels' sliders
-  cover (default 10), capped automatically by however many weeks have
-  actually been played this season.
-- `FANTASY_TREND_SEASONS` -- how many seasons back the trend grid covers,
-  including the current one (default 4).
+- `FANTASY_TREND_SEASONS` -- how many seasons back BOTH the quadrant
+  panels' season selector and the trend grid cover, including the current
+  one (default 4).
 
 ## Notes
 
