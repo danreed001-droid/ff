@@ -26,15 +26,19 @@ size means the same thing on both grids and on every card.
 
 A NOTE ON COLOUR
 ----------------
-The scatter needs four categorical identities (QB/RB/WR/TE). No four-hue
-palette clears the all-pairs colour-vision floors that a scatter requires --
-verified with the data-viz validator against this page's surface, where
-every candidate four-hue set failed both the CVD separation and
-normal-vision checks (worst pairs came in at dE 1.6-4.8 against a floor of
-8). Encoding position as SHAPE at a single hue sidesteps the problem
-entirely rather than shipping four colours that a colour-blind reader --
-or anyone on a bad monitor -- cannot separate. The two small-multiple grids
-each use one hue, which needs no legend.
+The scatter carries four categorical identities (QB/RB/WR/TE) as colour, on
+circles. Four hues is the hard case for a scatter, because every mark can sit
+next to every other one, so the palette has to hold up across ALL pairs
+rather than just adjacent ones -- the usual off-the-shelf categorical ramps
+fail that at the fourth slot. Rather than guess, POSITION_COLORS was found by
+sweeping the OKLCH gamut against the data-viz validator on this page's exact
+surface and maximising the worse of the two colour-vision floors. The set
+that won passes all five checks all-pairs (worst CVD dE 9.5, worst
+normal-vision dE 18.7). Identity is never colour alone regardless: there is a
+legend, the leaders are directly labelled, every mark names its position on
+hover, and the side table repeats the whole plot as text with a colour dot
+per row. The two small-multiple grids each use one hue, which needs no
+legend.
 
 PLAYER SELECTION
 ----------------
@@ -146,6 +150,26 @@ SCORING_FIELD = {
 SNAP_FIELDS = ["off_snp"]
 
 POSITION_ORDER = ["QB", "RB", "WR", "TE"]  # display order for the filter bar; anything else appended after
+
+# Categorical hues for the four positions in the scatter. NOT picked by eye:
+# these are the best-scoring four-hue set found by sweeping the OKLCH gamut
+# (hue x chroma x lightness) against the data-viz validator on this page's
+# panel surface (#111621), maximising the worse of the two colour-vision
+# floors. The winning set passes all five checks on the ALL-PAIRS pairlist a
+# scatter requires -- worst CVD dE 9.5 (target >= 8), worst normal-vision
+# dE 18.7 (floor >= 15), every slot >= 3:1 against the surface. Hues sit at
+# roughly 250/50/160/330 degrees, evenly spread, at near-equal lightness so
+# no position reads as "louder" than another.
+#
+# Colour follows the POSITION, never its rank or the filter state: switching
+# which positions are shown must never repaint the survivors.
+POSITION_COLORS = {
+    "QB": "#1a83db",   # blue
+    "RB": "#c85d00",   # orange
+    "WR": "#2b9667",   # green
+    "TE": "#9b5896",   # purple
+}
+POSITION_FALLBACK_COLOR = "#9CA3AF"
 
 
 def fetch_json(url):
@@ -577,10 +601,16 @@ PAGE_CSS = """
   .ptlabel{ fill:var(--ink); font-size:9px; font-family:'IBM Plex Mono', monospace; }
   .peaklabel{ fill:#9CA3AF; font-size:8.5px; font-family:'IBM Plex Mono', monospace; }
   .empty{ fill:#6B7280; font-size:10.5px; font-family:'IBM Plex Mono', monospace; }
-  /* scatter marks: ONE hue, position carried by shape (see module docstring) */
-  .mk{ fill:rgba(79,216,232,0.30); stroke:var(--cyan); stroke-width:1.5; cursor:pointer;
-       transition:transform .25s ease, opacity .2s ease; }
-  .mk:hover, .mk.pinned{ fill:rgba(79,216,232,0.75); stroke:#E8E6DE; }
+  /* scatter marks: circles, position carried by a validated 4-hue categorical
+     palette (see POSITION_COLORS in the module). The halo is a 2px ring in the
+     surface colour drawn under each mark so overlapping bubbles stay separable;
+     it must never intercept a hover meant for the mark itself. */
+  .mk{ fill-opacity:.32; stroke-width:1.6; cursor:pointer; }
+  .mk:hover{ fill-opacity:.85; stroke:#E8E6DE; }
+  .mk.pinned{ fill-opacity:.8; stroke-width:2.6; }
+  .halo{ fill:none; stroke:var(--panel); stroke-width:3; pointer-events:none; }
+  .sz{ fill:rgba(156,163,175,.28); stroke:#9CA3AF; stroke-width:1.4; }
+  .dot{ width:9px; height:9px; border-radius:50%; display:inline-block; flex-shrink:0; }
   .mklabel{ fill:var(--ink); font-size:9.5px; font-family:'IBM Plex Mono', monospace; }
   .medline{ stroke:rgba(107,114,128,0.45); stroke-width:1; stroke-dasharray:3,4; }
   .quad{ fill:#6B7280; font-size:9px; letter-spacing:.05em; font-family:'IBM Plex Mono', monospace; opacity:.75; }
@@ -602,6 +632,9 @@ const SNAP_R = __SNAP_BOUNDS__;      // [min,max] snaps across every game -- sma
 const GLOBAL_MAX = __GLOBAL_MAX__;   // {pts,pps} report-wide maxima for shared y-scaling
 const RANK_SEASON = __RANK_SEASON__;
 const RANK_WEEK = __RANK_WEEK__;
+const POS_COLORS = __POS_COLORS__;
+const POS_FALLBACK = __POS_FALLBACK__;
+function posColor(pos){ return POS_COLORS[pos] || POS_FALLBACK; }
 
 const G_SEASON = 0, G_WEEK = 1, G_PTS = 2, G_SNAPS = 3, G_TOUCHES = 4;
 const BY_PID = {};
@@ -611,26 +644,32 @@ POOL.forEach(function(p){ BY_PID[p.pid] = p; });
 // Shared filter state. One predicate drives all three panels, so what you see
 // in the scatter is always the same set of players as the cards below it.
 // ---------------------------------------------------------------------------
-let currentPos = 'ALL';
 let searchText = '';
-const pinned = new Set();
+const pinned = new Set();        // individually chosen players
+const selectedPos = new Set();   // chosen positions; empty means "no position chosen"
 
 function matchesSearch(p, q){
   return (p.n + ' ' + p.t + ' ' + p.p).toLowerCase().indexOf(q) !== -1;
 }
-// Precedence, strongest first:
-//   1. PINS win outright. Once you have named a set of players, that IS the
-//      set -- a position filter left over from earlier must not silently
-//      remove one of them.
-//   2. SEARCH narrows within the position filter, and lifts the top-N cap:
-//      asking for someone by name and not getting them because they rank
-//      214th would be the wrong answer.
-//   3. Otherwise the position rule applies, with the cap only on ALL.
+// Both selectors are multi-select, and everything you pick UNIONS together:
+// three positions plus two specific players shows all of them. Nothing you
+// explicitly chose can be removed by something else you chose -- which is why
+// this is a union and not a chain of narrowing filters.
+//
+//   * nothing chosen        -> the default top-N slice, so the page opens usable
+//   * positions only        -> every player at those positions
+//   * players only          -> exactly those players
+//   * positions + players   -> the union of both
+//
+// Typing in the search box is a temporary lookup rather than a selection: it
+// searches the WHOLE pool (otherwise you could never find a player outside the
+// current selection) while keeping pinned players visible so you don't lose
+// the set you were assembling.
 function passesFilter(p){
-  if (pinned.size) return pinned.has(p.pid);
-  if (currentPos !== 'ALL' && p.p !== currentPos) return false;
-  if (searchText) return matchesSearch(p, searchText);
-  return currentPos !== 'ALL' || p.k <= TOP_N;
+  if (searchText) return matchesSearch(p, searchText) || pinned.has(p.pid);
+  const hasPins = pinned.size > 0, hasPos = selectedPos.size > 0;
+  if (!hasPins && !hasPos) return p.k <= TOP_N;
+  return (hasPins && pinned.has(p.pid)) || (hasPos && selectedPos.has(p.p));
 }
 function visiblePlayers(){ return POOL.filter(passesFilter); }
 
@@ -695,34 +734,15 @@ function aggregate(pid, season, from, to){
   return { games: pts.length, ppg: mean(pts), spg: mean(snaps), snapGames: snaps.length };
 }
 
-// Position identity is SHAPE, not colour -- four categorical hues cannot clear
-// the all-pairs colour-vision floors a scatter needs (see module docstring).
-// All four glyphs are drawn to equal area so size stays comparable across them.
+// Every mark is a circle; POSITION is carried by colour, from the validated
+// four-hue palette. Each mark ships with a halo -- a ring in the panel colour
+// drawn underneath -- so two overlapping bubbles still read as two bubbles.
 function markSvg(pos, cx, cy, r, pid, isPinned){
-  const cls = 'mk' + (isPinned ? ' pinned' : '');
-  const tail = ' data-pid="' + esc(pid) + '"/>';
-  if (pos === 'QB'){
-    return '<circle class="' + cls + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) +
-      '" r="' + r.toFixed(1) + '"' + tail;
-  }
-  if (pos === 'RB'){
-    const s = r * 1.772, h = s / 2;   // square of equal area
-    return '<rect class="' + cls + '" x="' + (cx - h).toFixed(1) + '" y="' + (cy - h).toFixed(1) +
-      '" width="' + s.toFixed(1) + '" height="' + s.toFixed(1) + '" rx="1.5"' + tail;
-  }
-  if (pos === 'WR'){
-    const a = r * 2.69, hh = a * 0.5774;   // equilateral triangle of equal area
-    return '<polygon class="' + cls + '" points="' +
-      cx.toFixed(1) + ',' + (cy - hh).toFixed(1) + ' ' +
-      (cx - a / 2).toFixed(1) + ',' + (cy + hh / 2).toFixed(1) + ' ' +
-      (cx + a / 2).toFixed(1) + ',' + (cy + hh / 2).toFixed(1) + '"' + tail;
-  }
-  const h2 = r * 2.507 / 2;   // TE: diamond of equal area
-  return '<polygon class="' + cls + '" points="' +
-    cx.toFixed(1) + ',' + (cy - h2).toFixed(1) + ' ' +
-    (cx + h2).toFixed(1) + ',' + cy.toFixed(1) + ' ' +
-    cx.toFixed(1) + ',' + (cy + h2).toFixed(1) + ' ' +
-    (cx - h2).toFixed(1) + ',' + cy.toFixed(1) + '"' + tail;
+  const c = posColor(pos);
+  return '<circle class="halo" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r.toFixed(1) + '"/>' +
+    '<circle class="mk' + (isPinned ? ' pinned' : '') + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) +
+    '" r="' + r.toFixed(1) + '" fill="' + c + '" stroke="' + (isPinned ? '#E8E6DE' : c) +
+    '" data-pid="' + esc(pid) + '"><title>' + esc(pos) + '</title></circle>';
 }
 
 function renderScatter(){
@@ -842,8 +862,11 @@ function renderScatter(){
   document.getElementById('rankTable').innerHTML =
     '<div class="rank-row rank-head"><span>Player</span><span>pt/g</span><span>snap/g</span></div>' +
     table.map(function(r){
+      // The colour dot repeats the mark's identity in text form, so the table
+      // is a full substitute for the plot rather than a lookup key for it.
       return '<div class="rank-row" data-pid="' + esc(r.p.pid) + '">' +
-        '<span class="nm">' + esc(r.p.n) + ' <span class="s">' + r.p.p + '</span></span>' +
+        '<span class="nm"><span class="dot" style="background:' + posColor(r.p.p) + '"></span> ' +
+        esc(r.p.n) + ' <span class="s">' + r.p.p + '</span></span>' +
         '<span class="v">' + r.ppg.toFixed(1) + '</span>' +
         '<span class="s">' + r.spg.toFixed(0) + '</span></div>';
     }).join('');
@@ -1116,12 +1139,19 @@ function applyFilters(){
     c.style.display = vis.has(c.getAttribute('data-pid')) ? '' : 'none';
   });
   document.querySelectorAll('#posFilter .filter-btn').forEach(function(b){
-    b.classList.toggle('active', b.getAttribute('data-pos') === currentPos);
+    const pos = b.getAttribute('data-pos');
+    b.classList.toggle('active', pos === 'ALL' ? selectedPos.size === 0 : selectedPos.has(pos));
   });
-  const overridden = pinned.size > 0 || !!searchText;
-  document.getElementById('posCount').textContent = overridden
-    ? (vis.size + ' shown (top-' + TOP_N + ' cap off while filtering by name)')
-    : (currentPos === 'ALL' ? 'top ' + TOP_N + ' of the pool' : vis.size + ' ' + currentPos + 's in the pool');
+  let note;
+  if (searchText) note = vis.size + ' matching "' + searchText + '" (searches the whole pool)';
+  else if (!pinned.size && !selectedPos.size) note = 'top ' + TOP_N + ' of the pool — pick positions or players to change the set';
+  else {
+    const bits = [];
+    if (selectedPos.size) bits.push(Array.from(selectedPos).join(' + '));
+    if (pinned.size) bits.push(pinned.size + ' pinned player' + (pinned.size === 1 ? '' : 's'));
+    note = vis.size + ' shown: ' + bits.join(' + ');
+  }
+  document.getElementById('posCount').textContent = note;
   document.querySelectorAll('.gridCount').forEach(function(el){ el.textContent = vis.size + ' cards'; });
   renderScatter();
   observeAll();
@@ -1171,10 +1201,14 @@ function pinFromInput(){
   applyFilters();
 }
 
+// Positions are multi-select: each button toggles, ALL clears the set.
 document.getElementById('posFilter').addEventListener('click', function(e){
   const btn = e.target.closest('.filter-btn');
   if (!btn) return;
-  currentPos = btn.getAttribute('data-pos');
+  const pos = btn.getAttribute('data-pos');
+  if (pos === 'ALL') selectedPos.clear();
+  else if (selectedPos.has(pos)) selectedPos.delete(pos);
+  else selectedPos.add(pos);
   applyFilters();
 });
 document.querySelectorAll('.season-cb').forEach(function(cb){
@@ -1228,9 +1262,12 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
     for p in pool:
         pos_counts[p["pos"]] = pos_counts.get(p["pos"], 0) + 1
 
+    # Each button carries the position's own colour as a dot, so the filter bar
+    # and the plot teach the same key.
     filter_buttons = '<button class="filter-btn active" data-pos="ALL">ALL</button>' + "".join(
-        f'<button class="filter-btn" data-pos="{html.escape(pos)}">{html.escape(pos)} '
-        f'<span style="opacity:.6">{pos_counts.get(pos, 0)}</span></button>'
+        f'<button class="filter-btn" data-pos="{html.escape(pos)}">'
+        f'<span class="dot" style="background:{POSITION_COLORS.get(pos, POSITION_FALLBACK_COLOR)}"></span> '
+        f'{html.escape(pos)} <span style="opacity:.6">{pos_counts.get(pos, 0)}</span></button>'
         for pos in all_positions
     )
     season_checkboxes = "".join(
@@ -1239,6 +1276,13 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
         for s in seasons
     )
     datalist = "".join(f'<option value="{html.escape(p["name"])}">' for p in pool)
+    legend_rows = "".join(
+        f'<div><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">'
+        f'<circle cx="8" cy="8" r="6" fill="{POSITION_COLORS.get(pos, POSITION_FALLBACK_COLOR)}" '
+        f'fill-opacity=".32" stroke="{POSITION_COLORS.get(pos, POSITION_FALLBACK_COLOR)}" stroke-width="1.6"/>'
+        f'</svg> {html.escape(pos)} <span style="color:var(--dim)">{pos_counts.get(pos, 0)}</span></div>'
+        for pos in all_positions
+    )
 
     # Seasons that actually contain snap data are the only ones the scatter can
     # plot an x-axis for, so the selector offers those rather than every season.
@@ -1281,7 +1325,8 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
            data-rank="{entry['rank']}" data-metric="{metric}">
         <div class="trend-card-head">
           <span class="name">#{entry['rank']} {html.escape(entry['name'])}</span>
-          <span class="meta">{html.escape(entry['pos'])} &middot; {html.escape(entry['team'])}{stale_note}</span>
+          <span class="meta"><span class="dot" style="background:{POSITION_COLORS.get(entry['pos'], POSITION_FALLBACK_COLOR)}"></span>
+            {html.escape(entry['pos'])} &middot; {html.escape(entry['team'])}{stale_note}</span>
         </div>
         <div class="card-stats">{stat_line}</div>
         <svg class="m-{metric}" viewBox="0 0 440 170" role="img"
@@ -1312,9 +1357,9 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
             basis = (f"season-to-date {html.escape(scoring_label)} points in "
                      f"<b>{html.escape(str(ranking_season))}</b>")
             caveat = ""
-        selection_note = (f"Pool = top <b>{pool_size}</b> players by {basis}{caveat}. <b>ALL</b> shows the "
-                          f"top {top_n}; a position shows <b>every</b> player at that position; searching "
-                          f"or pinning a name overrides the cap entirely.")
+        selection_note = (f"Pool = top <b>{pool_size}</b> players by {basis}{caveat}. With nothing selected "
+                          f"you see the top {top_n}; selecting positions shows <b>every</b> player at those "
+                          f"positions, and pinned players are added on top of that.")
     else:
         selection_note = (f"Player list supplied via FANTASY_WATCHLIST ({len(pool)} players) -- ranking "
                           f"skipped.")
@@ -1336,8 +1381,9 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
 <div class="eyebrow">Fantasy Trends</div>
 <h1>Volume, Efficiency &amp; Weekly Form</h1>
 <div class="sub">
-  {len(pool)} players, {html.escape(seasons_label)}. One set of filters drives all three panels &mdash;
-  search or pin players by name, narrow to a position, and every chart below follows.
+  {len(pool)} players, {html.escape(seasons_label)}. One set of filters drives all three panels. Positions
+  and players are both <b>multi-select and additive</b> &mdash; tick RB and TE, pin three more players by
+  name, and you get all of them; every chart below follows.
 </div>
 <div class="status">
   {total_games:,} games &middot; generated {html.escape(as_of)}<br>
@@ -1352,7 +1398,7 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
       <input id="playerSearch" list="playerNames" placeholder="Search a name, team or position…"
              autocomplete="off" aria-label="Search players">
       <datalist id="playerNames">{datalist}</datalist>
-      <span class="hint">Enter (or click any mark) to pin &middot; pinned players ignore every other filter</span>
+      <span class="hint">Enter (or click any mark) to pin &middot; positions and pinned players add together</span>
     </div>
   </div>
   <div class="filter-bar" id="pinChips"></div>
@@ -1372,7 +1418,7 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
     points per game, <b>X</b> = offensive snaps per game, both averaged over that window.
     <b>Mark size</b> = that player's points per game across their <b>whole {html.escape(str(ranking_season))}
     season</b> (every game, not just the window) &mdash; a fixed reference that stays put as you slide.
-    <b>Shape</b> carries position; dashed crosshairs are the medians of whoever is currently shown.
+    <b>Colour</b> carries position; dashed crosshairs are the medians of whoever is currently shown.
     Click a mark to pin that player everywhere.</div>
   </div>
   <div class="filter-bar">
@@ -1400,20 +1446,17 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
     </div>
     <aside class="scatter-side">
       <div>
-        <div class="legend-title">Position (shape)</div>
-        <div class="shape-legend" style="margin-top:8px">
-          <div><svg width="18" height="18" viewBox="0 0 18 18"><circle class="mk" cx="9" cy="9" r="6"/></svg> QB</div>
-          <div><svg width="18" height="18" viewBox="0 0 18 18"><rect class="mk" x="3.7" y="3.7" width="10.6" height="10.6" rx="1.5"/></svg> RB</div>
-          <div><svg width="18" height="18" viewBox="0 0 18 18"><polygon class="mk" points="9,2.7 1.9,12 16.1,12"/></svg> WR</div>
-          <div><svg width="18" height="18" viewBox="0 0 18 18"><polygon class="mk" points="9,1.5 16.5,9 9,16.5 1.5,9"/></svg> TE</div>
-        </div>
+        <div class="legend-title">Position (colour)</div>
+        <div class="shape-legend" style="margin-top:8px">{legend_rows}</div>
       </div>
       <div>
         <div class="legend-title">Size = {html.escape(str(ranking_season))} points/game</div>
+        <!-- Neutral grey on purpose: this legend explains SIZE, and painting it
+             in a position hue would imply the size scale differs by position. -->
         <svg width="200" height="52" viewBox="0 0 200 52" style="margin-top:4px">
-          <circle class="mk" cx="16" cy="21" r="4"/><text class="ax" x="16" y="46" text-anchor="middle">low</text>
-          <circle class="mk" cx="56" cy="21" r="10"/><text class="ax" x="56" y="46" text-anchor="middle">mid</text>
-          <circle class="mk" cx="104" cy="21" r="17"/><text class="ax" x="104" y="46" text-anchor="middle">high</text>
+          <circle class="sz" cx="16" cy="21" r="4"/><text class="ax" x="16" y="46" text-anchor="middle">low</text>
+          <circle class="sz" cx="56" cy="21" r="10"/><text class="ax" x="56" y="46" text-anchor="middle">mid</text>
+          <circle class="sz" cx="104" cy="21" r="17"/><text class="ax" x="104" y="46" text-anchor="middle">high</text>
         </svg>
       </div>
       <div>
@@ -1474,7 +1517,9 @@ def _page_js(trend_series, pool, seasons, top_n, snap_bounds, global_max, rankin
             .replace("__SNAP_BOUNDS__", j(snap_bounds))
             .replace("__GLOBAL_MAX__", j(global_max))
             .replace("__RANK_SEASON__", j(str(ranking_season)))
-            .replace("__RANK_WEEK__", str(rank_week or 1)))
+            .replace("__RANK_WEEK__", str(rank_week or 1))
+            .replace("__POS_COLORS__", j(POSITION_COLORS))
+            .replace("__POS_FALLBACK__", j(POSITION_FALLBACK_COLOR)))
 
 
 def _wrap_html(body):
