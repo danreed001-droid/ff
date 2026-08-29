@@ -5,6 +5,12 @@ fresh from the Sleeper API on a weekly cron.
 
 Three panels, one shared pool, one shared set of filters:
 
+Kickers and team defenses appear in the weekly-points grid alongside
+everyone else, but are excluded from the two snap-based panels: neither
+takes offensive snaps, so "snaps per game" and "points per snap" are
+undefined for them rather than zero. The page says so where they would
+otherwise look empty.
+
   1. VOLUME vs EFFICIENCY (scatter) -- points per game on the y-axis against
      snaps per game on the x-axis, over a week range you scrub with a slider.
      Bubble size is that player's CURRENT-SEASON points per game across all
@@ -49,12 +55,22 @@ The report is not a hand-maintained list. Each run:
      player who was on bye, injured or inactive is ranked on the last week
      they actually played rather than being dropped from the report.
      Filtered to QB/RB/WR/TE.
-  2. Takes the top FANTASY_POOL_SIZE (default 300) of them as the pool.
-  3. The ALL view shows only the top FANTASY_TOP_N (default 40) of that
-     pool. Selecting a POSITION shows EVERY player at that position in the
-     full pool. Searching or pinning specific players overrides the top-N
-     cap entirely -- if you asked for a player by name, you get them
-     whatever their rank.
+  2. Takes the top FANTASY_POOL_SIZE (default 300) of them as the pool, and
+     adds two separately-capped groups ranked the same way: the top
+     FANTASY_DEF_COUNT team defenses (default 10) and the top
+     FANTASY_K_COUNT kickers (default 20). They are capped separately rather
+     than ranked against skill players, which would either bury them or, in
+     a week where a kicker outscores the WRs, crowd out the players the
+     report is about.
+  3. With no filter selected the page shows the top FANTASY_TOP_N (default
+     40) of that pool, so it opens usable rather than as 300 cards. Any
+     selection lifts that cap: pick a POSITION or a TEAM and you get EVERY
+     matching player in the full pool. Position and team are each
+     multi-select, OR within themselves and AND with each other ("the RBs
+     and TEs on KC or BUF"). Searching or pinning specific players ignores
+     the cap too, and pinned players are added on top of whatever else is
+     selected -- if you asked for a player by name, you get them whatever
+     their rank and whatever else is filtered.
 
 A player's last game is looked for within the ranking season only, newest
 week first. How stale each player's number is shows on their card ("last:
@@ -114,8 +130,11 @@ Env vars (all optional):
                          totals for a pool that barely moves week to week.
     FANTASY_WATCHLIST - comma-separated player full names. If set, ranking
                          is skipped and exactly these players are used.
-    FANTASY_POSITIONS - comma-separated positions eligible for the pool
-                         (default "QB,RB,WR,TE").
+    FANTASY_POSITIONS - comma-separated positions eligible for the main pool
+                         (default "QB,RB,WR,TE"). Kickers and defenses have
+                         their own counts below.
+    FANTASY_DEF_COUNT - how many team defenses to include (default 10).
+    FANTASY_K_COUNT   - how many kickers to include (default 20).
     FANTASY_TREND_SEASONS - how many regular seasons the report covers,
                          including the current one (default 6).
 """
@@ -149,7 +168,19 @@ SCORING_FIELD = {
 # points-per-snap and is drawn as a gap rather than a zero.
 SNAP_FIELDS = ["off_snp"]
 
-POSITION_ORDER = ["QB", "RB", "WR", "TE"]  # display order for the filter bar; anything else appended after
+POSITION_ORDER = ["QB", "RB", "WR", "TE", "K", "DEF"]  # display order for the filter bar
+
+# The skill positions: the ones with offensive snaps and touches, and so the
+# only ones the snaps-per-game scatter and the points-per-snap grid can say
+# anything about. Kickers and team defenses are carried through the report
+# with their own caps, but they are excluded from those two panels by
+# construction rather than plotted at zero -- a kicker pinned to x=0 would
+# read as "never on the field", which is a statement about the metric, not
+# about the kicker.
+SKILL_POSITIONS = ("QB", "RB", "WR", "TE")
+SNAPLESS_POSITIONS = ("K", "DEF")
+DEFAULT_DEF_COUNT = 10
+DEFAULT_K_COUNT = 20
 
 # Categorical hues for the four positions in the scatter. NOT picked by eye:
 # these are the best-scoring four-hue set found by sweeping the OKLCH gamut
@@ -168,6 +199,15 @@ POSITION_COLORS = {
     "RB": "#c85d00",   # orange
     "WR": "#2b9667",   # green
     "TE": "#9b5896",   # purple
+    # K and DEF are NOT part of that validated set, and deliberately so: six
+    # categorical hues cannot pass the all-pairs floors (checked -- the best
+    # six-hue attempt fails CVD separation and the normal-vision floor). They
+    # never need to: kickers and defenses are excluded from the scatter, which
+    # is the only place colour carries identity inside a plot. These two are
+    # UI accents only, always shown as a dot immediately beside the position's
+    # own text label, where colour is reinforcement rather than the encoding.
+    "K": "#7f8ea3",    # cool grey
+    "DEF": "#8d7350",  # warm brown
 }
 POSITION_FALLBACK_COLOR = "#9CA3AF"
 
@@ -253,6 +293,23 @@ def snaps_of(stats):
 # Player selection
 # ---------------------------------------------------------------------------
 
+def display_name(info, pid):
+    """A usable name for any Sleeper entry. Team defenses are the awkward case:
+    their player_id IS the team abbreviation and `full_name` is often absent,
+    so falling back to first/last and finally to the id keeps a DEF from being
+    silently dropped by a `if not name: continue` further down."""
+    name = info.get("full_name")
+    if name:
+        return name.strip()
+    parts = [info.get("first_name"), info.get("last_name")]
+    joined = " ".join(p.strip() for p in parts if p)
+    if joined:
+        return joined
+    if (info.get("position") or "") == "DEF":
+        return f"{pid} Defense"
+    return str(pid)
+
+
 def count_scorers(week_stats, scoring_field):
     """How many players have a real points value in one week's payload. Used
     to tell a finished week from one that's still being played."""
@@ -288,7 +345,7 @@ def pick_ranking_window(seasons, scoring_field, live_season=None, live_week=None
 
 
 def rank_pool(weeks_by_week, players_dir, scoring_field, pool_size, positions,
-              rank_by=DEFAULT_RANK_BY, rank_week=None):
+              rank_by=DEFAULT_RANK_BY, rank_week=None, group="skill"):
     """Rank players and return the top `pool_size` as
     [{pid, name, pos, team, rank, rank_pts, rank_from_week, weeks_stale,
     games}, ...], best first (rank is 1-based), keeping only `positions`.
@@ -346,11 +403,12 @@ def rank_pool(weeks_by_week, players_dir, scoring_field, pool_size, positions,
         pos = info.get("position")
         if pos not in positions:
             continue
-        name = info.get("full_name")
-        if not name:
-            continue
+        # A team defense's own team is itself; Sleeper doesn't always fill in
+        # the `team` field for those entries.
+        team = info.get("team") or (pid if pos == "DEF" else None) or "FA"
         rows.append({
-            "pid": pid, "name": name, "pos": pos, "team": info.get("team") or "FA",
+            "pid": pid, "name": display_name(info, pid), "pos": pos, "team": team,
+            "group": group,
             "rank_pts": round(pts, 1), "rank_from_week": from_week,
             "weeks_stale": (rank_week - from_week) if (rank_week is not None and rank_by != "season") else 0,
             "games": games.get(pid, 0),
@@ -383,8 +441,8 @@ def resolve_watchlist_ids(players_dir, names):
             continue
         info = players_dir[pid]
         out.append({
-            "pid": pid, "name": info.get("full_name", name), "pos": info.get("position") or "?",
-            "team": info.get("team") or "FA", "rank_pts": None, "games": None,
+            "pid": pid, "name": display_name(info, pid), "pos": info.get("position") or "?",
+            "team": info.get("team") or "FA", "group": "skill", "rank_pts": None, "games": None,
             "rank_from_week": None, "weeks_stale": 0, "rank": len(out) + 1,
         })
     return out
@@ -487,6 +545,22 @@ PAGE_CSS = """
   .filter-btn:hover{ color:var(--ink); border-color:#39424f; }
   .filter-btn.active{ color:#0B0E14; background:var(--cyan); border-color:var(--cyan); font-weight:600; }
   .filter-btn.small{ padding:5px 10px; font-size:10.5px; }
+  .filter-btn.tiny{ padding:4px 8px; font-size:10px; letter-spacing:.02em; }
+  /* 32 teams would dominate the sticky header, so the bar collapses. The
+     summary always states the current selection, so a filter is never
+     silently active behind a closed panel. */
+  .team-details{ margin:10px 0 6px; }
+  .team-details summary{
+    display:flex; align-items:center; gap:8px; cursor:pointer; list-style:none;
+    padding:2px 0; user-select:none;
+  }
+  .team-details summary::-webkit-details-marker{ display:none; }
+  .team-details summary::before{
+    content:'▸'; color:var(--dim); font-size:10px; transition:transform .15s ease; display:inline-block;
+  }
+  .team-details[open] summary::before{ transform:rotate(90deg); }
+  .team-summary{ font-size:11.5px; color:var(--cyan); }
+  .team-grid{ margin:8px 0 2px; gap:5px; max-width:1100px; }
   .filter-count{ font-size:10.5px; color:var(--dim); margin-left:4px; }
   .checkbox-btn{
     display:inline-flex; align-items:center; gap:6px; background:var(--panel); border:1px solid var(--line);
@@ -634,7 +708,11 @@ const RANK_SEASON = __RANK_SEASON__;
 const RANK_WEEK = __RANK_WEEK__;
 const POS_COLORS = __POS_COLORS__;
 const POS_FALLBACK = __POS_FALLBACK__;
+// Positions with no offensive snaps: they appear in the points grid but are
+// excluded from the scatter and the points-per-snap grid by construction.
+const SNAPLESS = new Set(__SNAPLESS__);
 function posColor(pos){ return POS_COLORS[pos] || POS_FALLBACK; }
+function hasSnaps(pos){ return !SNAPLESS.has(pos); }
 
 const G_SEASON = 0, G_WEEK = 1, G_PTS = 2, G_SNAPS = 3, G_TOUCHES = 4;
 const BY_PID = {};
@@ -645,31 +723,48 @@ POOL.forEach(function(p){ BY_PID[p.pid] = p; });
 // in the scatter is always the same set of players as the cards below it.
 // ---------------------------------------------------------------------------
 let searchText = '';
-const pinned = new Set();        // individually chosen players
-const selectedPos = new Set();   // chosen positions; empty means "no position chosen"
+const pinned = new Set();         // individually chosen players
+const selectedPos = new Set();    // chosen positions; empty means "none chosen"
+const selectedTeam = new Set();   // chosen teams; empty means "none chosen"
 
 function matchesSearch(p, q){
   return (p.n + ' ' + p.t + ' ' + p.p).toLowerCase().indexOf(q) !== -1;
 }
-// Both selectors are multi-select, and everything you pick UNIONS together:
-// three positions plus two specific players shows all of them. Nothing you
-// explicitly chose can be removed by something else you chose -- which is why
-// this is a union and not a chain of narrowing filters.
+
+// Every selector is multi-select. The two ATTRIBUTE selectors -- position and
+// team -- are OR within themselves and AND with each other, which is how
+// people actually read them: "RB + TE" and "KC + BUF" together means the RBs
+// and TEs on those two teams, not every RB in the league plus everyone in
+// Kansas City.
+function matchesAttrs(p){
+  if (selectedPos.size && !selectedPos.has(p.p)) return false;
+  if (selectedTeam.size && !selectedTeam.has(p.t)) return false;
+  return true;
+}
+
+// PINNED PLAYERS are a different kind of choice -- a named individual, not an
+// attribute -- so they are added on top rather than intersected. Pin a WR while
+// filtering to QBs and you get the quarterbacks AND him; nothing you explicitly
+// asked for is ever removed by something else you asked for.
 //
-//   * nothing chosen        -> the default top-N slice, so the page opens usable
-//   * positions only        -> every player at those positions
-//   * players only          -> exactly those players
-//   * positions + players   -> the union of both
+//   * nothing chosen           -> the default top-N slice, so the page opens usable
+//   * attributes only          -> every player matching them
+//   * players only             -> exactly those players
+//   * attributes + players     -> the attribute set plus the pinned players
 //
 // Typing in the search box is a temporary lookup rather than a selection: it
 // searches the WHOLE pool (otherwise you could never find a player outside the
-// current selection) while keeping pinned players visible so you don't lose
-// the set you were assembling.
+// current selection) while keeping pinned players visible so you don't lose the
+// set you were assembling.
 function passesFilter(p){
   if (searchText) return matchesSearch(p, searchText) || pinned.has(p.pid);
-  const hasPins = pinned.size > 0, hasPos = selectedPos.size > 0;
-  if (!hasPins && !hasPos) return p.k <= TOP_N;
-  return (hasPins && pinned.has(p.pid)) || (hasPos && selectedPos.has(p.p));
+  const hasPins = pinned.size > 0;
+  const hasAttrs = selectedPos.size > 0 || selectedTeam.size > 0;
+  // The unfiltered default is the top-N SKILL players. Kickers and defenses
+  // have their own small caps and are always one click away by position, but
+  // they would otherwise take 30 of the 40 default slots in some weeks.
+  if (!hasPins && !hasAttrs) return p.g === 'skill' && p.k <= TOP_N;
+  return (hasPins && pinned.has(p.pid)) || (hasAttrs && matchesAttrs(p));
 }
 function visiblePlayers(){ return POOL.filter(passesFilter); }
 
@@ -749,22 +844,31 @@ function renderScatter(){
   const svg = document.getElementById('scatterSvg');
   const players = visiblePlayers();
   const rows = [];
-  let noSnapCount = 0;
+  let noSnapCount = 0, snaplessCount = 0;
 
   players.forEach(function(p){
+    // Kickers and defenses are excluded here rather than plotted at x=0: they
+    // take no offensive snaps, so "snaps per game" isn't a small number for
+    // them, it's undefined.
+    if (!hasSnaps(p.p)){ snaplessCount++; return; }
     const a = aggregate(p.pid, scSeason, wkFrom, wkTo);
     if (!a){ noSnapCount++; return; }
     rows.push({ p: p, ppg: a.ppg, spg: a.spg, games: a.games,
                 ppg_season: seasonPPG(p.pid, scSeason) });
   });
 
+  const notes = [];
+  if (noSnapCount) notes.push(noSnapCount + ' with no games/snaps in this window');
+  if (snaplessCount) notes.push(snaplessCount + ' K/DEF — no offensive snaps, see the points grid below');
   document.getElementById('scatterCount').textContent =
-    rows.length + ' plotted' + (noSnapCount ? ' · ' + noSnapCount + ' with no games/snaps in this window' : '');
+    rows.length + ' plotted' + (notes.length ? ' · ' + notes.join(' · ') : '');
 
   if (!rows.length){
     svg.innerHTML = '<text class="empty" x="' + (SC.W / 2) + '" y="' + (SC.H / 2) +
-      '" text-anchor="middle">No players with snap data in ' + esc(scSeason) +
-      ' weeks ' + wkFrom + '-' + wkTo + '</text>';
+      '" text-anchor="middle">' + (snaplessCount
+        ? 'Kickers and defenses have no offensive snaps — their weekly points are in the grid below'
+        : 'No players with snap data in ' + esc(scSeason) + ' weeks ' + wkFrom + '-' + wkTo) +
+      '</text>';
     document.getElementById('rankTable').innerHTML = '';
     return;
   }
@@ -969,7 +1073,7 @@ function radiusOf(snaps){
   return R_MIN + f * (R_MAX - R_MIN);
 }
 
-function renderChart(svg, gamesIn, metric){
+function renderChart(svg, gamesIn, metric, pos){
   const W = GEO.W, H = GEO.H, ML = GEO.ML, MR = GEO.MR, MT = GEO.MT, MB = GEO.MB;
   const PW = W - ML - MR, PH = H - MT - MB;
   svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
@@ -978,8 +1082,15 @@ function renderChart(svg, gamesIn, metric){
   const vals = games.map(function(g){ return valueOf(g, metric); });
   const real = vals.filter(function(v){ return v !== null && v !== undefined; });
   if (real.length < 2){
-    svg.innerHTML = '<text class="empty" x="' + (W / 2) + '" y="' + (H / 2) + '" text-anchor="middle">' +
-      (metric === 'pps' ? 'no snap data' : 'no data yet') + '</text>';
+    // Distinguish "we have no snap numbers for this player" from "this
+    // position doesn't take offensive snaps at all" -- the second isn't a
+    // data gap, it's the metric not applying.
+    let msg = 'no data yet';
+    if (metric === 'pps') msg = SNAPLESS.has(pos)
+      ? (pos === 'K' ? 'kickers take no offensive snaps' : 'team defenses take no offensive snaps')
+      : 'no snap data';
+    svg.innerHTML = '<text class="empty" x="' + (W / 2) + '" y="' + (H / 2) +
+      '" text-anchor="middle">' + msg + '</text>';
     return;
   }
 
@@ -1077,7 +1188,7 @@ function renderChart(svg, gamesIn, metric){
 const drawn = new WeakSet();
 function drawCard(card){
   renderChart(card.querySelector('svg'), TREND_GAMES[card.getAttribute('data-pid')] || [],
-              card.getAttribute('data-metric'));
+              card.getAttribute('data-metric'), card.getAttribute('data-pos'));
   drawn.add(card);
 }
 const observer = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
@@ -1142,12 +1253,24 @@ function applyFilters(){
     const pos = b.getAttribute('data-pos');
     b.classList.toggle('active', pos === 'ALL' ? selectedPos.size === 0 : selectedPos.has(pos));
   });
+  document.querySelectorAll('#teamFilter .filter-btn').forEach(function(b){
+    const t = b.getAttribute('data-team');
+    b.classList.toggle('active', t === 'ALL' ? selectedTeam.size === 0 : selectedTeam.has(t));
+  });
+  document.getElementById('teamSummary').textContent = selectedTeam.size
+    ? Array.from(selectedTeam).sort().join(', ')
+    : 'all teams';
+
   let note;
   if (searchText) note = vis.size + ' matching "' + searchText + '" (searches the whole pool)';
-  else if (!pinned.size && !selectedPos.size) note = 'top ' + TOP_N + ' of the pool — pick positions or players to change the set';
+  else if (!pinned.size && !selectedPos.size && !selectedTeam.size)
+    note = 'top ' + TOP_N + ' of the pool — pick a position, team or player to change the set';
   else {
+    const attrs = [];
+    if (selectedPos.size) attrs.push(Array.from(selectedPos).join('/'));
+    if (selectedTeam.size) attrs.push(Array.from(selectedTeam).sort().join('/'));
     const bits = [];
-    if (selectedPos.size) bits.push(Array.from(selectedPos).join(' + '));
+    if (attrs.length) bits.push(attrs.join(' on '));
     if (pinned.size) bits.push(pinned.size + ' pinned player' + (pinned.size === 1 ? '' : 's'));
     note = vis.size + ' shown: ' + bits.join(' + ');
   }
@@ -1201,15 +1324,20 @@ function pinFromInput(){
   applyFilters();
 }
 
-// Positions are multi-select: each button toggles, ALL clears the set.
+// Positions and teams are both multi-select: each button toggles, ALL clears.
+function toggleInto(set, value){
+  if (value === 'ALL') set.clear();
+  else if (set.has(value)) set.delete(value);
+  else set.add(value);
+  applyFilters();
+}
 document.getElementById('posFilter').addEventListener('click', function(e){
   const btn = e.target.closest('.filter-btn');
-  if (!btn) return;
-  const pos = btn.getAttribute('data-pos');
-  if (pos === 'ALL') selectedPos.clear();
-  else if (selectedPos.has(pos)) selectedPos.delete(pos);
-  else selectedPos.add(pos);
-  applyFilters();
+  if (btn) toggleInto(selectedPos, btn.getAttribute('data-pos'));
+});
+document.getElementById('teamFilter').addEventListener('click', function(e){
+  const btn = e.target.closest('.filter-btn');
+  if (btn) toggleInto(selectedTeam, btn.getAttribute('data-team'));
 });
 document.querySelectorAll('.season-cb').forEach(function(cb){
   cb.addEventListener('change', applySeasonToggle);
@@ -1270,19 +1398,40 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
         f'{html.escape(pos)} <span style="opacity:.6">{pos_counts.get(pos, 0)}</span></button>'
         for pos in all_positions
     )
+    # Teams come from whoever is actually in the pool, not a hardcoded league
+    # list -- so the bar never offers a team with nothing behind it, and a
+    # relocation or expansion team needs no code change.
+    team_counts = {}
+    for p in pool:
+        team_counts[p["team"]] = team_counts.get(p["team"], 0) + 1
+    all_teams = sorted(team_counts)
+    team_buttons = "".join(
+        f'<button class="filter-btn tiny" data-team="{html.escape(t)}">{html.escape(t)} '
+        f'<span style="opacity:.55">{team_counts[t]}</span></button>'
+        for t in all_teams
+    )
     season_checkboxes = "".join(
         f'<label class="checkbox-btn"><input type="checkbox" class="season-cb" value="{html.escape(s)}" checked>'
         f' {html.escape(s)}</label>'
         for s in seasons
     )
     datalist = "".join(f'<option value="{html.escape(p["name"])}">' for p in pool)
+    # The scatter's legend lists only what the scatter can actually plot. K and
+    # DEF have colours for the filter bar and the cards, but showing them here
+    # would promise marks that can never appear.
+    scatter_positions = [p for p in all_positions if p in SKILL_POSITIONS]
     legend_rows = "".join(
         f'<div><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">'
         f'<circle cx="8" cy="8" r="6" fill="{POSITION_COLORS.get(pos, POSITION_FALLBACK_COLOR)}" '
         f'fill-opacity=".32" stroke="{POSITION_COLORS.get(pos, POSITION_FALLBACK_COLOR)}" stroke-width="1.6"/>'
         f'</svg> {html.escape(pos)} <span style="color:var(--dim)">{pos_counts.get(pos, 0)}</span></div>'
-        for pos in all_positions
+        for pos in scatter_positions
     )
+    snapless_present = [p for p in all_positions if p in SNAPLESS_POSITIONS]
+    if snapless_present:
+        legend_rows += (f'<div style="color:var(--dim); font-size:10px; margin-top:4px">'
+                        f'{" and ".join(snapless_present)} take no offensive snaps &mdash; '
+                        f'they appear in the points grid only</div>')
 
     # Seasons that actually contain snap data are the only ones the scatter can
     # plot an x-axis for, so the selector offers those rather than every season.
@@ -1320,11 +1469,16 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
             stale = (entry.get("weeks_stale") or 0) > 0
             stale_note = (f' &middot; <span class="stale">last: wk {entry["rank_from_week"]}</span>'
                           if stale else "")
+            # Kickers and defenses are ranked inside their own group, so their
+            # rank is labelled with it -- "#3" next to a WR's "#3" would read
+            # as the same standing.
+            grp = entry.get("group", "skill")
+            rank_label = f"#{entry['rank']}" if grp == "skill" else f"{html.escape(grp)} #{entry['rank']}"
             out.append(f"""
       <div class="trend-card" data-pid="{html.escape(entry['pid'])}" data-pos="{html.escape(entry['pos'])}"
            data-rank="{entry['rank']}" data-metric="{metric}">
         <div class="trend-card-head">
-          <span class="name">#{entry['rank']} {html.escape(entry['name'])}</span>
+          <span class="name">{rank_label} {html.escape(entry['name'])}</span>
           <span class="meta"><span class="dot" style="background:{POSITION_COLORS.get(entry['pos'], POSITION_FALLBACK_COLOR)}"></span>
             {html.escape(entry['pos'])} &middot; {html.escape(entry['team'])}{stale_note}</span>
         </div>
@@ -1358,8 +1512,8 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
                      f"<b>{html.escape(str(ranking_season))}</b>")
             caveat = ""
         selection_note = (f"Pool = top <b>{pool_size}</b> players by {basis}{caveat}. With nothing selected "
-                          f"you see the top {top_n}; selecting positions shows <b>every</b> player at those "
-                          f"positions, and pinned players are added on top of that.")
+                          f"you see the top {top_n}; any position or team selection shows <b>every</b> "
+                          f"matching player in the pool, and pinned players are added on top of that.")
     else:
         selection_note = (f"Player list supplied via FANTASY_WATCHLIST ({len(pool)} players) -- ranking "
                           f"skipped.")
@@ -1381,9 +1535,11 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
 <div class="eyebrow">Fantasy Trends</div>
 <h1>Volume, Efficiency &amp; Weekly Form</h1>
 <div class="sub">
-  {len(pool)} players, {html.escape(seasons_label)}. One set of filters drives all three panels. Positions
-  and players are both <b>multi-select and additive</b> &mdash; tick RB and TE, pin three more players by
-  name, and you get all of them; every chart below follows.
+  {len(pool)} players, {html.escape(seasons_label)}. One set of filters drives all three panels.
+  <b>Position</b> and <b>team</b> are multi-select and narrow each other &mdash; pick RB and TE, pick two
+  teams, and you get those positions on those teams. Selecting anything lifts the top-{top_n} cap, so a
+  team shows <b>every</b> one of its players in the pool. <b>Pinned players</b> are added on top of
+  whatever else is selected. Every chart below follows.
 </div>
 <div class="status">
   {total_games:,} games &middot; generated {html.escape(as_of)}<br>
@@ -1398,7 +1554,7 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
       <input id="playerSearch" list="playerNames" placeholder="Search a name, team or position…"
              autocomplete="off" aria-label="Search players">
       <datalist id="playerNames">{datalist}</datalist>
-      <span class="hint">Enter (or click any mark) to pin &middot; positions and pinned players add together</span>
+      <span class="hint">Enter (or click any mark) to pin &middot; position and team narrow each other, pins add on top</span>
     </div>
   </div>
   <div class="filter-bar" id="pinChips"></div>
@@ -1406,6 +1562,16 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
     <span class="filter-bar-label">Position</span>{filter_buttons}
     <span class="filter-count" id="posCount"></span>
   </div>
+  <details class="team-details">
+    <summary>
+      <span class="filter-bar-label">Team</span>
+      <span class="team-summary" id="teamSummary">all teams</span>
+      <span class="hint">{len(all_teams)} teams in the pool &middot; click to expand</span>
+    </summary>
+    <div class="filter-bar team-grid" id="teamFilter">
+      <button class="filter-btn tiny active" data-team="ALL">ALL</button>{team_buttons}
+    </div>
+  </details>
   <div class="filter-bar" id="seasonFilter">
     <span class="filter-bar-label">Seasons <span style="opacity:.6">(trend grids)</span></span>{season_checkboxes}
   </div>
@@ -1507,7 +1673,8 @@ def _page_js(trend_series, pool, seasons, top_n, snap_bounds, global_max, rankin
     def j(v):
         return json.dumps(v, separators=(",", ":"))
 
-    pool_light = [{"pid": p["pid"], "n": p["name"], "p": p["pos"], "t": p["team"], "k": p["rank"]}
+    pool_light = [{"pid": p["pid"], "n": p["name"], "p": p["pos"], "t": p["team"],
+                   "k": p["rank"], "g": p.get("group", "skill")}
                   for p in pool]
     return (PAGE_JS
             .replace("__TREND_GAMES__", j({k: v for k, v in trend_series.items() if v}))
@@ -1519,7 +1686,8 @@ def _page_js(trend_series, pool, seasons, top_n, snap_bounds, global_max, rankin
             .replace("__RANK_SEASON__", j(str(ranking_season)))
             .replace("__RANK_WEEK__", str(rank_week or 1))
             .replace("__POS_COLORS__", j(POSITION_COLORS))
-            .replace("__POS_FALLBACK__", j(POSITION_FALLBACK_COLOR)))
+            .replace("__POS_FALLBACK__", j(POSITION_FALLBACK_COLOR))
+            .replace("__SNAPLESS__", j(list(SNAPLESS_POSITIONS))))
 
 
 def _wrap_html(body):
@@ -1562,9 +1730,11 @@ def main():
     top_n = _env_int("FANTASY_TOP_N", DEFAULT_TOP_N)
     trend_seasons_back = _env_int("FANTASY_TREND_SEASONS", DEFAULT_TREND_SEASONS)
     positions = tuple(
-        p.strip().upper() for p in os.environ.get("FANTASY_POSITIONS", ",".join(POSITION_ORDER)).split(",")
+        p.strip().upper() for p in os.environ.get("FANTASY_POSITIONS", ",".join(SKILL_POSITIONS)).split(",")
         if p.strip()
     )
+    def_count = _env_int("FANTASY_DEF_COUNT", DEFAULT_DEF_COUNT)
+    k_count = _env_int("FANTASY_K_COUNT", DEFAULT_K_COUNT)
     manual_names = [n.strip() for n in os.environ.get("FANTASY_WATCHLIST", "").split(",") if n.strip()]
     rank_by = os.environ.get("FANTASY_RANK_BY", DEFAULT_RANK_BY).strip().lower()
     if rank_by == "week":  # earlier name for the same thing
@@ -1617,11 +1787,28 @@ def main():
             print("[warn] no season with usable stats -- nothing to rank.", file=sys.stderr)
             pool = []
         else:
+            # Three independently-capped groups. Kickers and defenses are ranked
+            # by the same last-game rule but kept in their own buckets, because
+            # ranking them against skill players would either bury them (a
+            # kicker rarely outscores a WR1) or, in a scoring format where they
+            # do, crowd out the players the report is actually about.
             pool = rank_pool(ranking_weeks, players_dir, scoring_field, pool_size, positions,
-                             rank_by=rank_by, rank_week=rank_week)
+                             rank_by=rank_by, rank_week=rank_week, group="skill")
+            def_pool = rank_pool(ranking_weeks, players_dir, scoring_field, def_count, ("DEF",),
+                                 rank_by=rank_by, rank_week=rank_week, group="DEF")
+            k_pool = rank_pool(ranking_weeks, players_dir, scoring_field, k_count, ("K",),
+                               rank_by=rank_by, rank_week=rank_week, group="K")
             basis = (f"{ranking_season} season totals" if rank_by == "season"
                      else f"last game played through {ranking_season} week {rank_week}")
             print(f"[info] pool = top {len(pool)} ({'/'.join(positions)}) by {scoring_label} points, {basis}")
+            print(f"[info]      + top {len(def_pool)} DEF, top {len(k_pool)} K (same ranking rule)")
+            if not def_pool:
+                print("  [warn] no team defenses found -- check that Sleeper still uses position 'DEF'",
+                      file=sys.stderr)
+            if not k_pool:
+                print("  [warn] no kickers found -- check that Sleeper still uses position 'K'",
+                      file=sys.stderr)
+            pool = pool + def_pool + k_pool
             if pool:
                 head = ", ".join(
                     f"{p['rank']}.{p['name']} ({p['rank_pts']}"
