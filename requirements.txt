@@ -1,0 +1,4 @@
+# fantasy_flow.py uses only the Python standard library (urllib, json, html,
+# os, sys, datetime) -- no third-party dependencies needed. This file exists
+# so `pip install -r requirements.txt` is a documented no-op if a workflow
+# step ever calls it, and as a place to add packages if you extend the script.
