@@ -1,0 +1,36 @@
+# 100 = easiest schedule, 0 = hardest. Fill in from FantasyPros/Sharp
+# Football/RotoWire/Footballguys SOS rankings -- every team defaults
+# to 50 (neutral) until you do.
+team,sos_score
+ARI,50
+ATL,50
+BAL,50
+BUF,50
+CAR,50
+CHI,50
+CIN,50
+CLE,50
+DAL,50
+DEN,50
+DET,50
+GB,50
+HOU,50
+IND,50
+JAX,50
+KC,50
+LAC,50
+LAR,50
+LV,50
+MIA,50
+MIN,50
+NE,50
+NO,50
+NYG,50
+NYJ,50
+PHI,50
+PIT,50
+SEA,50
+SF,50
+TB,50
+TEN,50
+WAS,50
