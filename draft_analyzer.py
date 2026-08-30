@@ -620,8 +620,16 @@ def main():
     season = state.get("league_season") or state.get("season")
     current_week = state.get("week") or 0
     season_type = state.get("season_type", "regular")
-    is_live = (season_type == "regular" and current_week and current_week >= 1)
-    last_completed_season = str(int(season) - 1) if is_live else str(season)
+    # `season`'s own regular season is only FULLY COMPLETE once season_type
+    # is "post" (playoffs, after all 18 regular-season weeks) or "off"
+    # (the full off-season). During "pre" (preseason) or "regular" (the
+    # season is still in progress), `season`'s regular season isn't done
+    # yet, so the last COMPLETED season is the one before it. Missing this
+    # distinction for "pre" specifically was a real bug: preseason and
+    # in-season both need season-1, but only preseason was falling through
+    # to the wrong branch before this fix.
+    season_complete = season_type in ("post", "off")
+    last_completed_season = str(season) if season_complete else str(int(season) - 1)
     print(f"[info] current state: season={season} week={current_week} type={season_type} "
           f"-- using last completed season {last_completed_season} for all analysis")
 
