@@ -1,36 +1,37 @@
-# 100 = easiest schedule, 0 = hardest. Fill in from FantasyPros/Sharp
-# Football/RotoWire/Footballguys SOS rankings -- every team defaults
-# to 50 (neutral) until you do.
+# Literal 0.55(hardest) -> 0.45(easiest) scale, as specified --
+# NOTE: this is a narrower range and OPPOSITE direction from this repo's
+# usual 0-100/higher=easier convention (see oline_score_for_team()).
+# On this scale the SOS component will barely move the composite score.
 team,sos_score
-ARI,50
-ATL,50
-BAL,50
-BUF,50
-CAR,50
-CHI,50
-CIN,50
-CLE,50
-DAL,50
-DEN,50
-DET,50
-GB,50
-HOU,50
-IND,50
-JAX,50
-KC,50
-LAC,50
-LAR,50
-LV,50
-MIA,50
-MIN,50
-NE,50
-NO,50
-NYG,50
-NYJ,50
-PHI,50
-PIT,50
-SEA,50
-SF,50
-TB,50
-TEN,50
-WAS,50
+ARI,0.55
+MIA,0.5468
+CAR,0.5435
+WAS,0.5403
+DAL,0.5371
+LAR,0.5339
+CHI,0.5306
+TB,0.5274
+GB,0.5242
+SEA,0.521
+HOU,0.5177
+NYG,0.5145
+LAC,0.5113
+ATL,0.5081
+JAX,0.5048
+PIT,0.5016
+TEN,0.4984
+MIN,0.4952
+BUF,0.4919
+LV,0.4887
+KC,0.4855
+DEN,0.4823
+NE,0.479
+IND,0.4758
+PHI,0.4726
+SF,0.4694
+CLE,0.4661
+BAL,0.4629
+NYJ,0.4597
+NO,0.4565
+CIN,0.4532
+DET,0.45
