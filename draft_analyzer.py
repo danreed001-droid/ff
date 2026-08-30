@@ -616,10 +616,29 @@ def main():
             pass
 
     print("[info] fetching Sleeper state...")
-    state = get_state()
-    season = state.get("league_season") or state.get("season")
-    current_week = state.get("week") or 0
-    season_type = state.get("season_type", "regular")
+    backtest_override = os.environ.get("DRAFT_BACKTEST_SEASON")
+    if backtest_override:
+        # Backtest mode: pretend it's preseason of `backtest_override`, so
+        # "last completed season" becomes backtest_override - 1 -- e.g.
+        # DRAFT_BACKTEST_SEASON=2025 reproduces exactly what this script
+        # would have ranked using 2024 stats, as if run right before the
+        # 2025 season started. Skips the live get_state() call entirely
+        # (no reason to hit Sleeper's current-state endpoint when the
+        # answer is being forced anyway).
+        try:
+            backtest_season = int(backtest_override)
+        except ValueError:
+            print(f"[error] DRAFT_BACKTEST_SEASON={backtest_override!r} isn't a valid year. Exiting.")
+            sys.exit(1)
+        season, current_week, season_type = backtest_season, 0, "pre"
+        print(f"[info] BACKTEST MODE: pretending it's preseason of {season} -- "
+              f"will use {season - 1} stats, exactly as if this script ran before the {season} season.")
+    else:
+        state = get_state()
+        season = state.get("league_season") or state.get("season")
+        current_week = state.get("week") or 0
+        season_type = state.get("season_type", "regular")
+
     # `season`'s own regular season is only FULLY COMPLETE once season_type
     # is "post" (playoffs, after all 18 regular-season weeks) or "off"
     # (the full off-season). During "pre" (preseason) or "regular" (the
@@ -677,12 +696,17 @@ def main():
     ranked_half = sorted(pool.values(), key=lambda p: p["composite_half_ppr"], reverse=True)[:top_n]
     ranked_std = sorted(pool.values(), key=lambda p: p["composite_std"], reverse=True)[:top_n]
 
-    write_csv(ranked_half, "half_ppr", "draft_board_half_ppr.csv")
-    write_csv(ranked_std, "std", "draft_board_standard.csv")
+    # Backtest runs get a filename suffix so they never overwrite the "live"
+    # draft_board.html/.csv from a normal (non-backtest) run.
+    suffix = f"_backtest_{last_completed_season}" if backtest_override else ""
 
-    with open("draft_board.html", "w") as f:
+    write_csv(ranked_half, "half_ppr", f"draft_board_half_ppr{suffix}.csv")
+    write_csv(ranked_std, "std", f"draft_board_standard{suffix}.csv")
+
+    html_path = f"draft_board{suffix}.html"
+    with open(html_path, "w") as f:
         f.write(render_html(ranked_half, ranked_std, as_of, pool_size, top_n))
-    print("[info] wrote draft_board.html")
+    print(f"[info] wrote {html_path}")
 
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
