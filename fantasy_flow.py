@@ -1291,14 +1291,19 @@ let leadPos = 'QB';
 let leadYear = 'last2';
 let leadSort = 'eff';
 let leadSortDir = -1;
+const leadTeams = new Set();   // chosen teams; empty means "no filter, show all"
+let leadCurrentRows = [];      // exactly what's on screen right now -- copy/download read this
 
-// One row per qualifying player for the chosen (position, year) slice. An
-// individual year uses that season's own server-computed `qualified` flag
+// One row per qualifying player for the chosen (position, year, team) slice.
+// An individual year uses that season's own server-computed `qualified` flag
 // (an exact top-N-by-volume for that year); "last2"/"last3" sum volume and
 // yards across the most recent N seasons for every player who qualified in
 // at least one of them, then RE-APPLIES that position's top-N threshold to
 // the combined volume -- the same rule, just measured on the combined
-// number instead of a single season's.
+// number instead of a single season's. The team filter (multi-select, OR
+// within itself) narrows AFTER that threshold is applied -- picking a team
+// shows who on that roster made the qualified cut, not a second, looser
+// pass restricted to that team.
 function leaderRows(pos, year){
   const cfg = LEADER_CFG[pos];
   if (!cfg) return [];
@@ -1329,6 +1334,7 @@ function leaderRows(pos, year){
     rows = rows.slice(0, cfg.top_n);
   }
   rows.forEach(function(r){ r.eff = r.vol ? r.yards / r.vol : 0; });
+  if (leadTeams.size) rows = rows.filter(function(r){ return leadTeams.has(r.t); });
   return rows;
 }
 
@@ -1361,9 +1367,12 @@ function renderLeaderTable(){
     rows.sort(function(a, b){ return leadSortDir * (a[leadSort] - b[leadSort]); });
   }
 
+  leadCurrentRows = rows;
+
   if (!rows.length){
+    const teamNote = leadTeams.size ? ' on ' + Array.from(leadTeams).sort().join('/') : '';
     body.innerHTML = '<tr><td colspan="6" class="empty-note">No qualified ' + esc(leadPos) +
-      's for this window yet.</td></tr>';
+      's' + teamNote + ' for this window yet.</td></tr>';
     return;
   }
   body.innerHTML = rows.map(function(r, idx){
@@ -1405,6 +1414,95 @@ if (leadHeadEl){
     renderLeaderTable();
   });
 }
+function syncLeadTeamUI(){
+  const wrap = document.getElementById('leadTeamFilter');
+  const summary = document.getElementById('leadTeamSummary');
+  if (!wrap || !summary) return;
+  wrap.querySelectorAll('.filter-btn').forEach(function(b){
+    const t = b.getAttribute('data-lead-team');
+    b.classList.toggle('active', t === 'ALL' ? leadTeams.size === 0 : leadTeams.has(t));
+  });
+  summary.textContent = leadTeams.size ? Array.from(leadTeams).sort().join(', ') : 'all teams';
+}
+const leadTeamFilterEl = document.getElementById('leadTeamFilter');
+if (leadTeamFilterEl){
+  leadTeamFilterEl.addEventListener('click', function(e){
+    const b = e.target.closest('.filter-btn[data-lead-team]');
+    if (!b) return;
+    const t = b.getAttribute('data-lead-team');
+    if (t === 'ALL') leadTeams.clear();
+    else if (leadTeams.has(t)) leadTeams.delete(t);
+    else leadTeams.add(t);
+    syncLeadTeamUI();
+    renderLeaderTable();
+  });
+}
+
+// --- copy / download: exactly the rows currently on screen, in the current
+// sort order, not a re-query of the full pool -- what you copy is what you see.
+function leadExportRows(){
+  const cfg = LEADER_CFG[leadPos];
+  if (!cfg) return [];
+  const header = ['#', 'Player', 'Team', cfg.vol_label, cfg.yard_label, cfg.eff_label];
+  const body = leadCurrentRows.map(function(r, idx){
+    return [String(idx + 1), r.n, r.t, r.vol.toFixed(0), r.yards.toFixed(0), r.eff.toFixed(2)];
+  });
+  return [header].concat(body);
+}
+function leadCSVCell(s){
+  s = String(s);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function leadShowStatus(msg){
+  const el = document.getElementById('leadCopyStatus');
+  if (!el) return;
+  el.textContent = msg;
+  clearTimeout(leadShowStatus._t);
+  leadShowStatus._t = setTimeout(function(){ el.textContent = ''; }, 2200);
+}
+const leadCopyBtn = document.getElementById('leadCopyBtn');
+if (leadCopyBtn){
+  leadCopyBtn.addEventListener('click', function(){
+    // Tab-separated so a paste into a spreadsheet lands in one cell per
+    // column instead of one comma-separated blob in column A.
+    const tsv = leadExportRows().map(function(row){ return row.join('\t'); }).join('\n');
+    const done = function(){ leadShowStatus('Copied ' + leadCurrentRows.length + ' rows'); };
+    const fail = function(){
+      const ta = document.createElement('textarea');
+      ta.value = tsv;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (e){ ok = false; }
+      document.body.removeChild(ta);
+      leadShowStatus(ok ? 'Copied ' + leadCurrentRows.length + ' rows' : 'Copy failed -- select the table and copy manually');
+    };
+    if (navigator.clipboard && window.isSecureContext){
+      navigator.clipboard.writeText(tsv).then(done, fail);
+    } else {
+      fail();
+    }
+  });
+}
+const leadDownloadBtn = document.getElementById('leadDownloadBtn');
+if (leadDownloadBtn){
+  leadDownloadBtn.addEventListener('click', function(){
+    const csv = leadExportRows().map(function(row){ return row.map(leadCSVCell).join(','); }).join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'efficiency-leaders-' + leadPos + '-' + leadYear + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  });
+}
+
 renderLeaderTable();
 """
 
@@ -1467,6 +1565,20 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
     leader_year_buttons = "".join(
         f'<button class="filter-btn" data-year="{html.escape(s)}">{html.escape(s)}</button>'
         for s in leader_seasons
+    )
+    # Teams come from whoever actually shows up in the leaders pool -- not
+    # `all_teams` above, which is scoped to the (differently-sized, possibly
+    # differently-filtered) trend-grid pool. Multi-select, OR within itself,
+    # same convention as the main team filter: pick two teams and see the
+    # qualified leaders from either.
+    leader_team_counts = {}
+    for p in leader_players:
+        leader_team_counts[p["t"]] = leader_team_counts.get(p["t"], 0) + 1
+    leader_teams = sorted(leader_team_counts)
+    leader_team_buttons = "".join(
+        f'<button class="filter-btn tiny" data-lead-team="{html.escape(t)}">{html.escape(t)} '
+        f'<span style="opacity:.55">{leader_team_counts[t]}</span></button>'
+        for t in leader_teams
     )
     season_checkboxes = "".join(
         f'<label class="checkbox-btn"><input type="checkbox" class="season-cb" value="{html.escape(s)}" checked>'
@@ -1645,7 +1757,8 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
     top <b>{LEADER_CFG['QB']['top_n']}</b> QBs by pass attempts &mdash; each within whichever season(s)
     are selected below. <b>Last 2 Seasons</b> (default) sums volume and yards across the two most recent
     seasons before ranking; an individual year re-applies that position's own threshold to that year
-    alone. Click a column header to sort.</div>
+    alone. <b>Team</b> narrows the qualified list to one or more rosters (multi-select). Click a column
+    header to sort.</div>
   </div>
   <div class="lead-controls" id="leadPosFilter">
     <span class="filter-bar-label">Position</span>{leader_pos_buttons}
@@ -1654,6 +1767,21 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
     <span class="filter-bar-label">Seasons</span>
     <button class="filter-btn active" data-year="last2">Last 2 Seasons</button>
     <button class="filter-btn" data-year="last3">Last 3 Seasons</button>{leader_year_buttons}
+  </div>
+  <details class="team-details">
+    <summary>
+      <span class="filter-bar-label">Team</span>
+      <span class="team-summary" id="leadTeamSummary">all teams</span>
+      <span class="hint">{len(leader_teams)} teams in this table &middot; click to expand</span>
+    </summary>
+    <div class="lead-controls team-grid" id="leadTeamFilter">
+      <button class="filter-btn tiny active" data-lead-team="ALL">ALL</button>{leader_team_buttons}
+    </div>
+  </details>
+  <div class="lead-controls" id="leadExportBar">
+    <button class="filter-btn small" id="leadCopyBtn">Copy table</button>
+    <button class="filter-btn small" id="leadDownloadBtn">Download CSV</button>
+    <span class="hint" id="leadCopyStatus"></span>
   </div>
   <div class="lead-table-wrap">
     <table class="lead-table" id="leadTable">
