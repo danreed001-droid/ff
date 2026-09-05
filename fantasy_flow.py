@@ -783,8 +783,12 @@ PAGE_CSS = """
   }
   table.lead-table thead th:hover{ color:var(--ink); }
   table.lead-table thead th.sorted{ color:var(--cyan); }
-  table.lead-table tbody tr{ border-bottom:1px solid var(--line); }
+  table.lead-table tbody tr{ border-bottom:1px solid var(--line); cursor:pointer; }
   table.lead-table tbody tr:hover{ background:rgba(255,255,255,.03); }
+  table.lead-table tbody tr:focus-visible{ outline:1px solid var(--cyan); outline-offset:-1px; }
+  table.lead-table tbody tr.pinned{ background:rgba(79,216,232,.08); box-shadow:inset 2px 0 0 var(--cyan); }
+  table.lead-table tbody tr.pinned:hover{ background:rgba(79,216,232,.14); }
+  table.lead-table tbody tr.empty-note, table.lead-table tbody tr:has(.empty-note){ cursor:default; }
   table.lead-table td.num{ color:var(--ink); font-weight:600; }
   table.lead-table td.rank{ color:var(--dim); }
   table.lead-table td.eff{ color:var(--cyan); font-weight:700; }
@@ -1209,9 +1213,21 @@ function togglePin(pid){
   if (pinned.has(pid)) pinned.delete(pid); else pinned.add(pid);
   renderChips();
   applyFilters();
+  // The leaders table (defined further down this script) highlights pinned
+  // rows and needs to know when a pin changed from anywhere else -- a chip's
+  // ×, "Clear all", or a click in the table itself. Declared with `function`,
+  // so it's hoisted and safe to call here regardless of source order: by the
+  // time a click actually fires this, the whole script has already run once.
+  if (typeof renderLeaderTable === 'function') renderLeaderTable();
 }
 document.getElementById('pinChips').addEventListener('click', function(e){
-  if (e.target.id === 'clearPins'){ pinned.clear(); renderChips(); applyFilters(); return; }
+  if (e.target.id === 'clearPins'){
+    pinned.clear();
+    renderChips();
+    applyFilters();
+    if (typeof renderLeaderTable === 'function') renderLeaderTable();
+    return;
+  }
   const b = e.target.closest('button[data-pid]');
   if (b) togglePin(b.getAttribute('data-pid'));
 });
@@ -1375,8 +1391,18 @@ function renderLeaderTable(){
       's' + teamNote + ' for this window yet.</td></tr>';
     return;
   }
+  // Rows are clickable: pinning a leader here uses the SAME `pinned` set the
+  // search box and pin chips use, so a player picked from this table is
+  // filtered into both trend grids above (and stays pinned if you switch
+  // position/year/team here, or vice versa). A row only pins if the player
+  // has a card to reveal -- see the pool-union note in build_leader_pool's
+  // caller in fantasy_flow.py's main(), which folds every leaders-table
+  // player into the trend pool for exactly this reason.
   body.innerHTML = rows.map(function(r, idx){
-    return '<tr><td class="rank">' + (idx + 1) + '</td><td>' + esc(r.n) + '</td><td>' + esc(r.t) +
+    const isPinned = pinned.has(r.pid);
+    return '<tr data-pid="' + esc(r.pid) + '" class="' + (isPinned ? 'pinned' : '') + '" tabindex="0" role="button" ' +
+      'aria-pressed="' + isPinned + '" aria-label="' + (isPinned ? 'Unpin ' : 'Pin ') + esc(r.n) + '">' +
+      '<td class="rank">' + (idx + 1) + '</td><td>' + esc(r.n) + '</td><td>' + esc(r.t) +
       '</td><td class="num">' + r.vol.toFixed(0) + '</td><td class="num">' + r.yards.toFixed(0) +
       '</td><td class="eff">' + r.eff.toFixed(2) + '</td></tr>';
   }).join('');
@@ -1412,6 +1438,22 @@ if (leadHeadEl){
     if (leadSort === key) leadSortDir *= -1;
     else { leadSort = key; leadSortDir = (key === 'n' || key === 't') ? 1 : -1; }
     renderLeaderTable();
+  });
+}
+const leadBodyEl = document.getElementById('leadBody');
+if (leadBodyEl){
+  leadBodyEl.addEventListener('click', function(e){
+    const row = e.target.closest('tr[data-pid]');
+    if (row) togglePin(row.getAttribute('data-pid'));
+  });
+  // Rows are keyboard-focusable (tabindex + role="button" set when they're
+  // drawn) so pinning from the table doesn't require a mouse.
+  leadBodyEl.addEventListener('keydown', function(e){
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const row = e.target.closest('tr[data-pid]');
+    if (!row) return;
+    e.preventDefault();
+    togglePin(row.getAttribute('data-pid'));
   });
 }
 function syncLeadTeamUI(){
@@ -1616,14 +1658,22 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
                           if stale else "")
             # Kickers and defenses are ranked inside their own group, so their
             # rank is labelled with it -- "#3" next to a WR's "#3" would read
-            # as the same standing.
+            # as the same standing. "leader" entries aren't ranked by
+            # anything at all -- they're efficiency-leaders players folded in
+            # only so they have a card to reveal when pinned -- so they get
+            # no rank badge, just the name.
             grp = entry.get("group", "skill")
-            rank_label = f"#{entry['rank']}" if grp == "skill" else f"{html.escape(grp)} #{entry['rank']}"
+            if grp == "leader":
+                name_prefix = ""
+            elif grp == "skill":
+                name_prefix = f"#{entry['rank']} "
+            else:
+                name_prefix = f"{html.escape(grp)} #{entry['rank']} "
             out.append(f"""
       <div class="trend-card" data-pid="{html.escape(entry['pid'])}" data-pos="{html.escape(entry['pos'])}"
            data-rank="{entry['rank']}" data-metric="{metric}">
         <div class="trend-card-head">
-          <span class="name">{rank_label} {html.escape(entry['name'])}</span>
+          <span class="name">{name_prefix}{html.escape(entry['name'])}</span>
           <span class="meta"><span class="dot" style="background:{POSITION_COLORS.get(entry['pos'], POSITION_FALLBACK_COLOR)}"></span>
             {html.escape(entry['pos'])} &middot; {html.escape(entry['team'])}{stale_note}</span>
         </div>
@@ -1758,7 +1808,9 @@ once games have been played, or verify FANTASY_WATCHLIST names match Sleeper's p
     are selected below. <b>Last 2 Seasons</b> (default) sums volume and yards across the two most recent
     seasons before ranking; an individual year re-applies that position's own threshold to that year
     alone. <b>Team</b> narrows the qualified list to one or more rosters (multi-select). Click a column
-    header to sort.</div>
+    header to sort, or <b>click a player row to pin them into the Weekly Points and Points Per Snap
+    grids above</b> &mdash; click again (or the &times; on their chip) to unpin. Pin as many players as
+    you like at once.</div>
   </div>
   <div class="lead-controls" id="leadPosFilter">
     <span class="filter-bar-label">Position</span>{leader_pos_buttons}
@@ -1973,8 +2025,35 @@ def main():
         print("[info] wrote index.html (empty-state)")
         return
 
-    print(f"[info] building {trend_seasons_back}-season history for {len(pool)} players ({seasons_label})...")
-    trend_series = build_trend_series(pool, seasons, scoring_field)
+    # Fold in every efficiency-leaders player who ISN'T already in the ranked
+    # pool, so clicking a leaders-table row always has a card to reveal: the
+    # trend grids only ever show cards for players actually rendered into the
+    # page, and cards are rendered from this pool. These extras ride along
+    # for free -- build_trend_series() below already walks every cached week
+    # of `seasons` regardless of pool size, so adding entries here costs no
+    # extra Sleeper fetches, just a few more (already-fetched) lookups per
+    # week. group="leader" keeps them out of the default top-N view (same
+    # mechanism that already hides DEF/K there) -- they only appear when
+    # pinned, searched for, or matched by a position/team filter.
+    existing_pids = {p["pid"] for p in pool}
+    leader_only_pids = [p["pid"] for p in leader_players if p["pid"] not in existing_pids]
+    leader_extras = []
+    for i, pid in enumerate(leader_only_pids):
+        info = players_dir.get(pid) or {}
+        leader_extras.append({
+            "pid": pid, "name": display_name(info, pid), "pos": info.get("position") or "?",
+            "team": info.get("team") or "FA", "group": "leader",
+            "rank_pts": None, "rank_from_week": None, "weeks_stale": 0, "games": None,
+            "rank": i + 1,
+        })
+    render_pool = pool + leader_extras
+    if leader_extras:
+        print(f"[info] +{len(leader_extras)} efficiency-leaders players folded into the trend pool "
+              f"(pinnable, not shown by default)")
+
+    print(f"[info] building {trend_seasons_back}-season history for {len(render_pool)} players "
+          f"({seasons_label})...")
+    trend_series = build_trend_series(render_pool, seasons, scoring_field)
     snap_cov = snap_coverage(trend_series)
     if snap_cov[1]:
         print(f"[info] snap counts present for {snap_cov[0]:,} of {snap_cov[1]:,} games "
@@ -1984,12 +2063,12 @@ def main():
               f"empty. Check that Sleeper still populates {SNAP_FIELDS} in the stats payload.", file=sys.stderr)
 
     with open("index.html", "w") as f:
-        f.write(render_html(pool, trend_series, seasons, seasons_label, scoring_label, ranking_season,
+        f.write(render_html(render_pool, trend_series, seasons, seasons_label, scoring_label, ranking_season,
                             rank_week, rank_by, pool_size, top_n, selection_mode, missing, now, snap_cov,
                             leader_seasons, leader_players))
 
     size_mb = os.path.getsize("index.html") / (1024 * 1024)
-    print(f"[info] wrote index.html ({size_mb:.1f} MB, {len(pool)} players, {snap_cov[1]:,} games)")
+    print(f"[info] wrote index.html ({size_mb:.1f} MB, {len(render_pool)} players, {snap_cov[1]:,} games)")
 
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
